@@ -2,31 +2,31 @@ export default async (req, res) => {
   const startTime = Date.now();
 
   // ============================================================
-  // HELPERS
+  // CONFIG
   // ============================================================
 
+  const FUNCTION_TIMEOUT = 9000;
+
   const remainingTime = () => {
-    return 9000 - (Date.now() - startTime);
+    return FUNCTION_TIMEOUT - (Date.now() - startTime);
   };
 
-  const graphqlRequest = async (
-    query,
-    variables = {}
-  ) => {
-    const controller =
-      new AbortController();
+  // ============================================================
+  // GRAPHQL HELPER
+  // ============================================================
 
-    // Keep GraphQL requests short so the Nhost
-    // Function does not hit its 10-second limit.
-    const availableTime =
-      remainingTime();
+  const graphqlRequest = async (query, variables = {}) => {
+    const remaining = remainingTime();
 
-    const timeoutMs = Math.max(
-      1000,
-      Math.min(
-        2000,
-        availableTime - 500
-      )
+    if (remaining < 700) {
+      throw new Error("Not enough time remaining for GraphQL request");
+    }
+
+    const controller = new AbortController();
+
+    const timeoutMs = Math.min(
+      1400,
+      Math.max(700, remaining - 300)
     );
 
     const timeout = setTimeout(() => {
@@ -34,48 +34,39 @@ export default async (req, res) => {
     }, timeoutMs);
 
     try {
-      const response =
-        await fetch(
-          process.env.NHOST_GRAPHQL_URL,
-          {
-            method: "POST",
+      const response = await fetch(
+        process.env.NHOST_GRAPHQL_URL,
+        {
+          method: "POST",
 
-            headers: {
-              "Content-Type":
-                "application/json",
+          headers: {
+            "Content-Type": "application/json",
+            "x-hasura-admin-secret":
+              process.env.NHOST_ADMIN_SECRET,
+          },
 
-              "x-hasura-admin-secret":
-                process.env.NHOST_ADMIN_SECRET,
-            },
+          body: JSON.stringify({
+            query,
+            variables,
+          }),
 
-            body: JSON.stringify({
-              query,
-              variables,
-            }),
+          signal: controller.signal,
+        }
+      );
 
-            signal:
-              controller.signal,
-          }
-        );
-
-      const text =
-        await response.text();
+      const text = await response.text();
 
       let result;
 
       try {
-        result =
-          JSON.parse(text);
+        result = JSON.parse(text);
       } catch {
         throw new Error(
-          `GraphQL returned invalid JSON: ${text}`
+          `GraphQL returned invalid JSON: ${text.slice(0, 500)}`
         );
       }
 
-      if (
-        !response.ok ||
-        result.errors
-      ) {
+      if (!response.ok || result.errors) {
         throw new Error(
           result.errors?.[0]?.message ||
             `GraphQL request failed with status ${response.status}`
@@ -84,13 +75,8 @@ export default async (req, res) => {
 
       return result.data;
     } catch (error) {
-      if (
-        error.name ===
-        "AbortError"
-      ) {
-        throw new Error(
-          "GraphQL request timed out"
-        );
+      if (error.name === "AbortError") {
+        throw new Error("GraphQL request timed out");
       }
 
       throw error;
@@ -100,35 +86,30 @@ export default async (req, res) => {
   };
 
   // ============================================================
-  // 1. READ HASURA EVENT
+  // MAIN
   // ============================================================
 
   try {
-    const event =
-      req.body?.event;
+    // ============================================================
+    // 1. READ HASURA EVENT
+    // ============================================================
 
-    const stepRun =
-      event?.data?.new;
+    const event = req.body?.event;
+
+    const stepRun = event?.data?.new;
 
     if (!stepRun) {
       return res.status(400).json({
         success: false,
-        message:
-          "step_run event data is missing",
+        message: "step_run event data is missing",
       });
     }
 
-    const stepRunId =
-      stepRun.id;
+    const stepRunId = stepRun.id;
+    const workflowRunId = stepRun.workflow_run_id;
+    const workflowStepId = stepRun.workflow_step_id;
 
-    const workflowRunId =
-      stepRun.workflow_run_id;
-
-    const workflowStepId =
-      stepRun.workflow_step_id;
-
-    const stepInput =
-      stepRun.input || {};
+    const stepInput = stepRun.input || {};
 
     if (
       !stepRunId ||
@@ -137,8 +118,7 @@ export default async (req, res) => {
     ) {
       return res.status(400).json({
         success: false,
-        message:
-          "Invalid step_run event data",
+        message: "Invalid step_run event data",
       });
     }
 
@@ -147,46 +127,39 @@ export default async (req, res) => {
     );
 
     // ============================================================
-    // 2. ENVIRONMENT VARIABLES
+    // 2. CHECK ENVIRONMENT
     // ============================================================
 
-    if (
-      !process.env.NHOST_GRAPHQL_URL
-    ) {
+    if (!process.env.NHOST_GRAPHQL_URL) {
       return res.status(500).json({
         success: false,
-        message:
-          "NHOST_GRAPHQL_URL is not configured",
+        message: "NHOST_GRAPHQL_URL is not configured",
       });
     }
 
-    if (
-      !process.env.NHOST_ADMIN_SECRET
-    ) {
+    if (!process.env.NHOST_ADMIN_SECRET) {
       return res.status(500).json({
         success: false,
-        message:
-          "NHOST_ADMIN_SECRET is not configured",
+        message: "NHOST_ADMIN_SECRET is not configured",
       });
     }
 
-    if (
-      !process.env.OPENROUTER_API_KEY
-    ) {
+    if (!process.env.OPENROUTER_API_KEY) {
       return res.status(500).json({
         success: false,
-        message:
-          "OPENROUTER_API_KEY is not configured",
+        message: "OPENROUTER_API_KEY is not configured",
       });
     }
 
     // ============================================================
-    // 3. GET CURRENT STEP
+    // 3. GET CURRENT STEP + NEXT STEP IN ONE REQUEST
     // ============================================================
 
-    const stepQuery = `
-      query GetWorkflowStep(
+    const workflowQuery = `
+      query GetWorkflowSteps(
         $step_id: uuid!
+        $workflow_id: uuid!
+        $step_order: Int!
       ) {
         workflow_steps_by_pk(
           id: $step_id
@@ -198,40 +171,7 @@ export default async (req, res) => {
           type
           config
         }
-      }
-    `;
 
-    const stepData =
-      await graphqlRequest(
-        stepQuery,
-        {
-          step_id:
-            workflowStepId,
-        }
-      );
-
-    const step =
-      stepData.workflow_steps_by_pk;
-
-    if (!step) {
-      throw new Error(
-        "Workflow step not found"
-      );
-    }
-
-    console.log(
-      `Executing: ${step.name} (${step.type})`
-    );
-
-    // ============================================================
-    // 4. GET NEXT STEP
-    // ============================================================
-
-    const nextStepQuery = `
-      query GetNextWorkflowStep(
-        $workflow_id: uuid!
-        $step_order: Int!
-      ) {
         workflow_steps(
           where: {
             workflow_id: {
@@ -241,11 +181,9 @@ export default async (req, res) => {
               _gt: $step_order
             }
           }
-
           order_by: {
             step_order: asc
           }
-
           limit: 1
         ) {
           id
@@ -258,24 +196,36 @@ export default async (req, res) => {
       }
     `;
 
-    const nextStepData =
-      await graphqlRequest(
-        nextStepQuery,
-        {
-          workflow_id:
-            step.workflow_id,
+    const workflowData = await graphqlRequest(
+      workflowQuery,
+      {
+        step_id: workflowStepId,
+        workflow_id: workflowRunId,
+        step_order:
+          stepRun.step_order ||
+          0,
+      }
+    );
 
-          step_order:
-            step.step_order,
-        }
+    const step =
+      workflowData.workflow_steps_by_pk;
+
+    if (!step) {
+      throw new Error(
+        "Workflow step not found"
       );
+    }
 
     const nextStep =
-      nextStepData.workflow_steps?.[0] ||
+      workflowData.workflow_steps?.[0] ||
       null;
 
+    console.log(
+      `Executing: ${step.name} (${step.type})`
+    );
+
     // ============================================================
-    // 5. EXECUTE STEP
+    // 4. EXECUTE STEP
     // ============================================================
 
     let stepOutput;
@@ -286,12 +236,7 @@ export default async (req, res) => {
       // ==========================================================
 
       if (step.type === "llm") {
-        const config =
-          step.config || {};
-
-        // --------------------------------------------------------
-        // Prompt
-        // --------------------------------------------------------
+        const config = step.config || {};
 
         const basePrompt =
           config.prompt ??
@@ -299,29 +244,18 @@ export default async (req, res) => {
           step.name ??
           "Complete this task.";
 
-        // --------------------------------------------------------
-        // Previous step output
-        // --------------------------------------------------------
-
         const previousOutput =
           stepInput.previous_output;
 
-        let prompt =
-          basePrompt;
+        let prompt = basePrompt;
 
         if (previousOutput) {
           prompt += `
 
 Previous step output:
-${JSON.stringify(
-  previousOutput
-)}
+${JSON.stringify(previousOutput)}
 `;
         }
-
-        // --------------------------------------------------------
-        // Model
-        // --------------------------------------------------------
 
         const model =
           config.model ||
@@ -335,77 +269,77 @@ ${JSON.stringify(
         // OpenRouter timeout
         // --------------------------------------------------------
 
+        const remaining = remainingTime();
+
+        if (remaining < 1500) {
+          throw new Error(
+            "Not enough time remaining to call OpenRouter"
+          );
+        }
+
         const controller =
           new AbortController();
 
-        const availableTime =
-          remainingTime();
+        const timeoutMs = Math.min(
+          4500,
+          Math.max(
+            1500,
+            remaining - 1000
+          )
+        );
 
-        const timeoutMs =
-          Math.min(
-            4000,
-            Math.max(
-              1000,
-              availableTime - 1500
-            )
-          );
-
-        const timeout =
-          setTimeout(() => {
-            controller.abort();
-          }, timeoutMs);
+        const timeout = setTimeout(
+          () => controller.abort(),
+          timeoutMs
+        );
 
         let llmResponse;
 
         try {
-          llmResponse =
-            await fetch(
-              "https://openrouter.ai/api/v1/chat/completions",
-              {
-                method: "POST",
+          llmResponse = await fetch(
+            "https://openrouter.ai/api/v1/chat/completions",
+            {
+              method: "POST",
 
-                headers: {
-                  "Content-Type":
-                    "application/json",
+              headers: {
+                "Content-Type":
+                  "application/json",
 
-                  Authorization:
-                    `Bearer ${process.env.OPENROUTER_API_KEY}`,
+                Authorization:
+                  `Bearer ${process.env.OPENROUTER_API_KEY}`,
 
-                  "HTTP-Referer":
-                    "https://app.nhost.io",
+                "HTTP-Referer":
+                  "https://app.nhost.io",
 
-                  "X-Title":
-                    "AI Agent Workflow Builder",
-                },
+                "X-Title":
+                  "AI Agent Workflow Builder",
+              },
 
-                body: JSON.stringify({
-                  model,
+              body: JSON.stringify({
+                model,
 
-                  messages: [
-                    {
-                      role: "user",
-                      content: prompt,
-                    },
-                  ],
+                messages: [
+                  {
+                    role: "user",
+                    content: prompt,
+                  },
+                ],
 
-                  // Keep response small
-                  // to improve execution speed.
-                  max_tokens:
-                    config.max_tokens ||
-                    300,
-                }),
+                max_tokens:
+                  config.max_tokens ||
+                  200,
+              }),
 
-                signal:
-                  controller.signal,
-              }
-            );
+              signal: controller.signal,
+            }
+          );
         } catch (error) {
           if (
             error.name ===
             "AbortError"
           ) {
             throw new Error(
-              "OpenRouter request timed out. Try a faster free model."
+              "OpenRouter request timed out"
             );
           }
 
@@ -417,7 +351,7 @@ ${JSON.stringify(
         }
 
         // --------------------------------------------------------
-        // Read OpenRouter response
+        // Read response
         // --------------------------------------------------------
 
         const responseText =
@@ -427,9 +361,7 @@ ${JSON.stringify(
 
         try {
           llmResult =
-            JSON.parse(
-              responseText
-            );
+            JSON.parse(responseText);
         } catch {
           throw new Error(
             `OpenRouter returned invalid JSON: ${responseText.slice(
@@ -440,7 +372,7 @@ ${JSON.stringify(
         }
 
         // --------------------------------------------------------
-        // OpenRouter error
+        // API error
         // --------------------------------------------------------
 
         if (!llmResponse.ok) {
@@ -451,7 +383,7 @@ ${JSON.stringify(
         }
 
         // --------------------------------------------------------
-        // Extract AI text
+        // Extract AI output
         // --------------------------------------------------------
 
         const aiText =
@@ -464,10 +396,6 @@ ${JSON.stringify(
             "OpenRouter returned no text response"
           );
         }
-
-        // --------------------------------------------------------
-        // Output
-        // --------------------------------------------------------
 
         stepOutput = {
           text: aiText,
@@ -483,7 +411,7 @@ ${JSON.stringify(
       }
 
       // ==========================================================
-      // UNSUPPORTED STEP TYPE
+      // UNSUPPORTED STEP
       // ==========================================================
 
       else {
@@ -506,20 +434,21 @@ ${JSON.stringify(
         "Unknown step error";
 
       // ----------------------------------------------------------
-      // Mark step failed
+      // Mark step + workflow failed
+      // Single GraphQL request
       // ----------------------------------------------------------
 
       try {
-        const failStepMutation = `
-          mutation FailStep(
-            $id: uuid!
+        const failMutation = `
+          mutation FailExecution(
+            $step_id: uuid!
+            $workflow_id: uuid!
             $error: String!
           ) {
             update_step_runs_by_pk(
               pk_columns: {
-                id: $id
+                id: $step_id
               }
-
               _set: {
                 status: "failed"
                 error: $error
@@ -529,39 +458,11 @@ ${JSON.stringify(
               status
               error
             }
-          }
-        `;
 
-        await graphqlRequest(
-          failStepMutation,
-          {
-            id: stepRunId,
-            error:
-              errorMessage,
-          }
-        );
-      } catch (dbError) {
-        console.error(
-          "Could not update failed step:",
-          dbError
-        );
-      }
-
-      // ----------------------------------------------------------
-      // Mark workflow failed
-      // ----------------------------------------------------------
-
-      try {
-        const failWorkflowMutation = `
-          mutation FailWorkflow(
-            $id: uuid!
-            $error: String!
-          ) {
             update_workflow_runs_by_pk(
               pk_columns: {
-                id: $id
+                id: $workflow_id
               }
-
               _set: {
                 status: "failed"
                 error: $error
@@ -575,28 +476,29 @@ ${JSON.stringify(
         `;
 
         await graphqlRequest(
-          failWorkflowMutation,
+          failMutation,
           {
-            id: workflowRunId,
-            error:
-              errorMessage,
+            step_id: stepRunId,
+            workflow_id: workflowRunId,
+            error: errorMessage,
           }
         );
       } catch (dbError) {
         console.error(
-          "Could not update failed workflow:",
+          "Could not update failed execution:",
           dbError
         );
       }
 
+      // Return 200 so Hasura does not repeatedly
+      // execute the same failed event.
       return res.status(200).json({
         success: false,
 
         message:
           `Step execution failed: ${step.name}`,
 
-        error:
-          errorMessage,
+        error: errorMessage,
 
         workflow_run_id:
           workflowRunId,
@@ -607,63 +509,43 @@ ${JSON.stringify(
     }
 
     // ============================================================
-    // 6. COMPLETE CURRENT STEP
-    // ============================================================
-
-    const completeStepMutation = `
-      mutation CompleteStep(
-        $id: uuid!
-        $output: jsonb
-      ) {
-        update_step_runs_by_pk(
-          pk_columns: {
-            id: $id
-          }
-
-          _set: {
-            status: "completed"
-            output: $output
-          }
-        ) {
-          id
-          status
-          output
-        }
-      }
-    `;
-
-    await graphqlRequest(
-      completeStepMutation,
-      {
-        id: stepRunId,
-
-        output:
-          stepOutput,
-      }
-    );
-
-    console.log(
-      `Completed: ${step.name}`
-    );
-
-    // ============================================================
-    // 7. CREATE NEXT STEP
+    // 5. COMPLETE STEP + CREATE NEXT STEP
+    //    OR COMPLETE WORKFLOW
+    //
+    //    ONE GRAPHQL REQUEST
     // ============================================================
 
     if (nextStep) {
-      const createNextStepMutation = `
-        mutation CreateNextStep(
-          $workflow_run_id: uuid!
-          $workflow_step_id: uuid!
+      const nextStepMutation = `
+        mutation CompleteAndCreateNext(
+          $step_id: uuid!
+          $next_workflow_run_id: uuid!
+          $next_workflow_step_id: uuid!
+          $output: jsonb
           $input: jsonb
         ) {
+
+          update_step_runs_by_pk(
+            pk_columns: {
+              id: $step_id
+            }
+            _set: {
+              status: "completed"
+              output: $output
+            }
+          ) {
+            id
+            status
+            output
+          }
+
           insert_step_runs_one(
             object: {
               workflow_run_id:
-                $workflow_run_id
+                $next_workflow_run_id
 
               workflow_step_id:
-                $workflow_step_id
+                $next_workflow_step_id
 
               status: "pending"
 
@@ -677,19 +559,29 @@ ${JSON.stringify(
       `;
 
       await graphqlRequest(
-        createNextStepMutation,
+        nextStepMutation,
         {
-          workflow_run_id:
+          step_id:
+            stepRunId,
+
+          next_workflow_run_id:
             workflowRunId,
 
-          workflow_step_id:
+          next_workflow_step_id:
             nextStep.id,
+
+          output:
+            stepOutput,
 
           input: {
             previous_output:
               stepOutput,
           },
         }
+      );
+
+      console.log(
+        `Completed: ${step.name}`
       );
 
       console.log(
@@ -715,24 +607,39 @@ ${JSON.stringify(
           nextStep.name,
 
         duration_ms:
-          Date.now() -
-          startTime,
+          Date.now() - startTime,
       });
     }
 
     // ============================================================
-    // 8. NO NEXT STEP → COMPLETE WORKFLOW
+    // 6. LAST STEP
     // ============================================================
 
     const completeWorkflowMutation = `
       mutation CompleteWorkflow(
-        $id: uuid!
+        $step_id: uuid!
+        $workflow_id: uuid!
+        $output: jsonb
       ) {
+
+        update_step_runs_by_pk(
+          pk_columns: {
+            id: $step_id
+          }
+          _set: {
+            status: "completed"
+            output: $output
+          }
+        ) {
+          id
+          status
+          output
+        }
+
         update_workflow_runs_by_pk(
           pk_columns: {
-            id: $id
+            id: $workflow_id
           }
-
           _set: {
             status: "completed"
           }
@@ -747,8 +654,14 @@ ${JSON.stringify(
     await graphqlRequest(
       completeWorkflowMutation,
       {
-        id:
+        step_id:
+          stepRunId,
+
+        workflow_id:
           workflowRunId,
+
+        output:
+          stepOutput,
       }
     );
 
@@ -757,7 +670,7 @@ ${JSON.stringify(
     );
 
     // ============================================================
-    // 9. FINAL RESPONSE
+    // 7. FINAL RESPONSE
     // ============================================================
 
     return res.status(200).json({
@@ -776,9 +689,9 @@ ${JSON.stringify(
         "completed",
 
       duration_ms:
-        Date.now() -
-        startTime,
+        Date.now() - startTime,
     });
+
   } catch (error) {
     // ============================================================
     // UNEXPECTED ERROR
@@ -800,8 +713,7 @@ ${JSON.stringify(
         "Unknown error",
 
       duration_ms:
-        Date.now() -
-        startTime,
+        Date.now() - startTime,
     });
   }
 };
