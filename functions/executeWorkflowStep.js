@@ -1,29 +1,100 @@
 export default async (req, res) => {
+  const startTime = Date.now();
+
+  // ============================================================
+  // HELPERS
+  // ============================================================
+
+  const remainingTime = () => {
+    return 9000 - (Date.now() - startTime);
+  };
+
+  const graphqlRequest = async (query, variables = {}) => {
+    const controller = new AbortController();
+
+    // Never allow GraphQL itself to consume the whole
+    // Nhost Function execution window.
+    const timeoutMs = Math.max(
+      1000,
+      Math.min(2500, remainingTime() - 500)
+    );
+
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, timeoutMs);
+
+    try {
+      const response = await fetch(
+        process.env.NHOST_GRAPHQL_URL,
+        {
+          method: "POST",
+
+          headers: {
+            "Content-Type": "application/json",
+            "x-hasura-admin-secret":
+              process.env.NHOST_ADMIN_SECRET,
+          },
+
+          body: JSON.stringify({
+            query,
+            variables,
+          }),
+
+          signal: controller.signal,
+        }
+      );
+
+      const text = await response.text();
+
+      let result;
+
+      try {
+        result = JSON.parse(text);
+      } catch {
+        throw new Error(
+          `GraphQL returned invalid JSON: ${text}`
+        );
+      }
+
+      if (!response.ok || result.errors) {
+        throw new Error(
+          result.errors?.[0]?.message ||
+            `GraphQL request failed with status ${response.status}`
+        );
+      }
+
+      return result.data;
+    } catch (error) {
+      if (error.name === "AbortError") {
+        throw new Error(
+          "GraphQL request timed out"
+        );
+      }
+
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
+  // ============================================================
+  // 1. VALIDATE EVENT
+  // ============================================================
+
   try {
-    // --------------------------------------------------
-    // 1. Get event data
-    // --------------------------------------------------
-
-    const event =
-      req.body?.event;
-
-    const stepRun =
-      event?.data?.new;
+    const event = req.body?.event;
+    const stepRun = event?.data?.new;
 
     if (!stepRun) {
       return res.status(400).json({
         success: false,
-        message:
-          "step_run event data is missing",
+        message: "step_run event data is missing",
       });
     }
 
-    const stepRunId =
-      stepRun.id;
-
+    const stepRunId = stepRun.id;
     const workflowRunId =
       stepRun.workflow_run_id;
-
     const workflowStepId =
       stepRun.workflow_step_id;
 
@@ -37,14 +108,17 @@ export default async (req, res) => {
     ) {
       return res.status(400).json({
         success: false,
-        message:
-          "Invalid step_run event data",
+        message: "Invalid step_run event data",
       });
     }
 
-    // --------------------------------------------------
-    // 2. Check environment variables
-    // --------------------------------------------------
+    console.log(
+      `Starting step ${workflowStepId}`
+    );
+
+    // ============================================================
+    // 2. CHECK ENVIRONMENT
+    // ============================================================
 
     if (!process.env.NHOST_GRAPHQL_URL) {
       return res.status(500).json({
@@ -62,67 +136,49 @@ export default async (req, res) => {
       });
     }
 
-    // --------------------------------------------------
-    // 3. GraphQL helper
-    // --------------------------------------------------
+    if (!process.env.OPENROUTER_API_KEY) {
+      return res.status(500).json({
+        success: false,
+        message:
+          "OPENROUTER_API_KEY is not configured",
+      });
+    }
 
-    const graphqlRequest = async (
-      query,
-      variables = {}
-    ) => {
-      const response = await fetch(
-        process.env.NHOST_GRAPHQL_URL,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-hasura-admin-secret":
-              process.env.NHOST_ADMIN_SECRET,
-          },
-          body: JSON.stringify({
-            query,
-            variables,
-          }),
-        }
-      );
-
-      const text =
-        await response.text();
-
-      let result;
-
-      try {
-        result =
-          JSON.parse(text);
-      } catch {
-        throw new Error(
-          `GraphQL returned invalid JSON: ${text}`
-        );
-      }
-
-      if (
-        !response.ok ||
-        result.errors
-      ) {
-        throw new Error(
-          result.errors?.[0]?.message ||
-            `GraphQL request failed with status ${response.status}`
-        );
-      }
-
-      return result.data;
-    };
-
-    // --------------------------------------------------
-    // 4. Get workflow step
-    // --------------------------------------------------
+    // ============================================================
+    // 3. GET CURRENT STEP + NEXT STEP
+    //    ONE GRAPHQL REQUEST
+    // ============================================================
 
     const stepQuery = `
-      query GetWorkflowStep(
-        $id: uuid!
+      query GetWorkflowStepAndNext(
+        $step_id: uuid!
+        $workflow_id: uuid!
+        $step_order: Int!
       ) {
-        workflow_steps_by_pk(
-          id: $id
+        current_step: workflow_steps_by_pk(
+          id: $step_id
+        ) {
+          id
+          workflow_id
+          step_order
+          name
+          type
+          config
+        }
+
+        next_steps: workflow_steps(
+          where: {
+            workflow_id: {
+              _eq: $workflow_id
+            }
+            step_order: {
+              _gt: $step_order
+            }
+          }
+          order_by: {
+            step_order: asc
+          }
+          limit: 1
         ) {
           id
           workflow_id
@@ -138,12 +194,18 @@ export default async (req, res) => {
       await graphqlRequest(
         stepQuery,
         {
-          id: workflowStepId,
+          step_id: workflowStepId,
+          workflow_id: workflowRunId,
+          step_order:
+            stepRun.step_order || 0,
         }
       );
 
     const step =
-      stepData.workflow_steps_by_pk;
+      stepData.current_step;
+
+    const nextStep =
+      stepData.next_steps?.[0] || null;
 
     if (!step) {
       throw new Error(
@@ -152,15 +214,15 @@ export default async (req, res) => {
     }
 
     console.log(
-      `Executing step: ${step.name}`
+      `Executing: ${step.name} (${step.type})`
     );
 
-    // --------------------------------------------------
-    // 5. Mark step as running
-    // --------------------------------------------------
+    // ============================================================
+    // 4. MARK STEP AS RUNNING
+    // ============================================================
 
-    const startStepMutation = `
-      mutation StartStepRun(
+    const startMutation = `
+      mutation StartStep(
         $id: uuid!
       ) {
         update_step_runs_by_pk(
@@ -178,22 +240,22 @@ export default async (req, res) => {
     `;
 
     await graphqlRequest(
-      startStepMutation,
+      startMutation,
       {
         id: stepRunId,
       }
     );
 
-    // --------------------------------------------------
-    // 6. Execute step
-    // --------------------------------------------------
+    // ============================================================
+    // 5. EXECUTE STEP
+    // ============================================================
 
     let stepOutput;
 
     try {
-      // ================================================
+      // ----------------------------------------------------------
       // LLM STEP
-      // ================================================
+      // ----------------------------------------------------------
 
       if (step.type === "llm") {
         const config =
@@ -202,46 +264,50 @@ export default async (req, res) => {
         const basePrompt =
           config.prompt ??
           config.message ??
-          step.name;
+          step.name ??
+          "Complete this task.";
 
         const previousOutput =
           stepInput.previous_output;
 
-        const prompt =
-          previousOutput
-            ? `${basePrompt}
+        let prompt = basePrompt;
+
+        if (previousOutput) {
+          prompt += `
 
 Previous step output:
-${JSON.stringify(previousOutput)}`
-            : basePrompt;
-
-        const model =
-          config.model ??
-          "openrouter/free";
-
-        // ----------------------------------------------
-        // Check API key
-        // ----------------------------------------------
-
-        if (
-          !process.env.OPENROUTER_API_KEY
-        ) {
-          throw new Error(
-            "OPENROUTER_API_KEY is not configured"
-          );
+${JSON.stringify(previousOutput)}
+`;
         }
 
-        // ----------------------------------------------
-        // Timeout helper
-        // ----------------------------------------------
+        // Use model configured in the workflow.
+        // Otherwise use OpenRouter's free router.
+        const model =
+          config.model ||
+          "openrouter/free";
+
+        console.log(
+          `Calling OpenRouter using ${model}`
+        );
+
+        // --------------------------------------------------------
+        // OPENROUTER TIMEOUT
+        // --------------------------------------------------------
 
         const controller =
           new AbortController();
 
-        const timeout =
-          setTimeout(() => {
-            controller.abort();
-          }, 7000);
+        const timeoutMs = Math.min(
+          4000,
+          Math.max(
+            1000,
+            remainingTime() - 1500
+          )
+        );
+
+        const timeout = setTimeout(() => {
+          controller.abort();
+        }, timeoutMs);
 
         let llmResponse;
 
@@ -275,6 +341,10 @@ ${JSON.stringify(previousOutput)}`
                       content: prompt,
                     },
                   ],
+
+                  // Keep responses small and fast.
+                  max_tokens:
+                    config.max_tokens || 300,
                 }),
 
                 signal:
@@ -287,7 +357,7 @@ ${JSON.stringify(previousOutput)}`
             "AbortError"
           ) {
             throw new Error(
-              "OpenRouter request timed out after 7 seconds"
+              "OpenRouter request timed out. Try a faster free model."
             );
           }
 
@@ -298,9 +368,9 @@ ${JSON.stringify(previousOutput)}`
           clearTimeout(timeout);
         }
 
-        // ----------------------------------------------
-        // Read OpenRouter response
-        // ----------------------------------------------
+        // --------------------------------------------------------
+        // READ RESPONSE
+        // --------------------------------------------------------
 
         const responseText =
           await llmResponse.text();
@@ -314,7 +384,10 @@ ${JSON.stringify(previousOutput)}`
             );
         } catch {
           throw new Error(
-            `OpenRouter returned invalid JSON: ${responseText}`
+            `OpenRouter returned invalid JSON: ${responseText.slice(
+              0,
+              500
+            )}`
           );
         }
 
@@ -326,7 +399,8 @@ ${JSON.stringify(previousOutput)}`
         }
 
         const aiText =
-          llmResult?.choices?.[0]
+          llmResult
+            ?.choices?.[0]
             ?.message?.content;
 
         if (!aiText) {
@@ -341,210 +415,22 @@ ${JSON.stringify(previousOutput)}`
             llmResult.model ||
             model,
         };
+
+        console.log(
+          "LLM step completed"
+        );
       }
 
-      // ================================================
-      // UNSUPPORTED STEP TYPE
-      // ================================================
+      // ----------------------------------------------------------
+      // OTHER STEP TYPES
+      // ----------------------------------------------------------
 
       else {
         throw new Error(
           `Unsupported step type: ${step.type}`
         );
       }
-
-      // ------------------------------------------------
-      // 7. Get next workflow step
-      // ------------------------------------------------
-
-      const nextStepQuery = `
-        query GetNextWorkflowStep(
-          $workflow_id: uuid!
-          $step_order: Int!
-        ) {
-          workflow_steps(
-            where: {
-              workflow_id: {
-                _eq: $workflow_id
-              }
-              step_order: {
-                _gt: $step_order
-              }
-            }
-            order_by: {
-              step_order: asc
-            }
-            limit: 1
-          ) {
-            id
-            step_order
-            name
-            type
-            config
-          }
-        }
-      `;
-
-      const nextStepData =
-        await graphqlRequest(
-          nextStepQuery,
-          {
-            workflow_id:
-              step.workflow_id,
-            step_order:
-              step.step_order,
-          }
-        );
-
-      const nextStep =
-        nextStepData
-          .workflow_steps?.[0] ||
-        null;
-
-      // ------------------------------------------------
-      // 8. Complete current step
-      // ------------------------------------------------
-
-      const completeStepMutation = `
-        mutation CompleteStepRun(
-          $id: uuid!
-          $output: jsonb
-        ) {
-          update_step_runs_by_pk(
-            pk_columns: {
-              id: $id
-            }
-            _set: {
-              status: "completed"
-              output: $output
-            }
-          ) {
-            id
-            status
-            output
-          }
-        }
-      `;
-
-      await graphqlRequest(
-        completeStepMutation,
-        {
-          id: stepRunId,
-          output: stepOutput,
-        }
-      );
-
-      console.log(
-        `Completed step: ${step.name}`
-      );
-
-      // ------------------------------------------------
-      // 9. Start next step OR complete workflow
-      // ------------------------------------------------
-
-      if (nextStep) {
-        const createNextStepRunMutation = `
-          mutation CreateNextStepRun(
-            $workflow_run_id: uuid!
-            $workflow_step_id: uuid!
-            $input: jsonb
-          ) {
-            insert_step_runs_one(
-              object: {
-                workflow_run_id: $workflow_run_id
-                workflow_step_id: $workflow_step_id
-                status: "pending"
-                input: $input
-              }
-            ) {
-              id
-              status
-            }
-          }
-        `;
-
-        await graphqlRequest(
-          createNextStepRunMutation,
-          {
-            workflow_run_id:
-              workflowRunId,
-
-            workflow_step_id:
-              nextStep.id,
-
-            input: {
-              previous_output:
-                stepOutput,
-            },
-          }
-        );
-
-        console.log(
-          `Created next step: ${nextStep.name}`
-        );
-
-        return res.status(200).json({
-          success: true,
-          message:
-            "Step completed and next step started",
-          step_run_id: stepRunId,
-          workflow_run_id:
-            workflowRunId,
-          completed_step:
-            step.name,
-          next_step:
-            nextStep.name,
-        });
-      }
-
-      // ------------------------------------------------
-      // 10. No next step → complete workflow
-      // ------------------------------------------------
-
-      const completeWorkflowMutation = `
-        mutation CompleteWorkflowRun(
-          $id: uuid!
-        ) {
-          update_workflow_runs_by_pk(
-            pk_columns: {
-              id: $id
-            }
-            _set: {
-              status: "completed"
-            }
-          ) {
-            id
-            status
-            completed_at
-          }
-        }
-      `;
-
-      await graphqlRequest(
-        completeWorkflowMutation,
-        {
-          id: workflowRunId,
-        }
-      );
-
-      console.log(
-        `Workflow ${workflowRunId} completed`
-      );
-
-      return res.status(200).json({
-        success: true,
-        message:
-          "Workflow completed successfully",
-        workflow_run_id:
-          workflowRunId,
-        completed_step:
-          step.name,
-      });
     } catch (stepError) {
-      // ------------------------------------------------
-      // 11. Step failed
-      // ------------------------------------------------
-
       console.error(
         `Step failed: ${step.name}`,
         stepError
@@ -554,32 +440,32 @@ ${JSON.stringify(previousOutput)}`
         stepError?.message ||
         "Unknown step error";
 
-      // ----------------------------------------------
-      // Mark step failed
-      // ----------------------------------------------
-
-      const failStepMutation = `
-        mutation FailStepRun(
-          $id: uuid!
-          $error: String!
-        ) {
-          update_step_runs_by_pk(
-            pk_columns: {
-              id: $id
-            }
-            _set: {
-              status: "failed"
-              error: $error
-            }
-          ) {
-            id
-            status
-            error
-          }
-        }
-      `;
+      // ==========================================================
+      // MARK STEP FAILED
+      // ==========================================================
 
       try {
+        const failStepMutation = `
+          mutation FailStep(
+            $id: uuid!
+            $error: String!
+          ) {
+            update_step_runs_by_pk(
+              pk_columns: {
+                id: $id
+              }
+              _set: {
+                status: "failed"
+                error: $error
+              }
+            ) {
+              id
+              status
+              error
+            }
+          }
+        `;
+
         await graphqlRequest(
           failStepMutation,
           {
@@ -587,39 +473,38 @@ ${JSON.stringify(previousOutput)}`
             error: errorMessage,
           }
         );
-      } catch (error) {
+      } catch (dbError) {
         console.error(
-          "Failed to mark step as failed:",
-          error
+          "Could not update failed step:",
+          dbError
         );
       }
 
-      // ----------------------------------------------
-      // Mark workflow failed
-      // ----------------------------------------------
-
-      const failWorkflowMutation = `
-        mutation FailWorkflowRun(
-          $id: uuid!
-          $error: String!
-        ) {
-          update_workflow_runs_by_pk(
-            pk_columns: {
-              id: $id
-            }
-            _set: {
-              status: "failed"
-              error: $error
-            }
-          ) {
-            id
-            status
-            error
-          }
-        }
-      `;
+      // ==========================================================
+      // MARK WORKFLOW FAILED
+      // ==========================================================
 
       try {
+        const failWorkflowMutation = `
+          mutation FailWorkflow(
+            $id: uuid!
+            $error: String!
+          ) {
+            update_workflow_runs_by_pk(
+              pk_columns: {
+                id: $id
+              }
+              _set: {
+                status: "failed"
+                error: $error
+              }
+            ) {
+              id
+              status
+            }
+          }
+        `;
+
         await graphqlRequest(
           failWorkflowMutation,
           {
@@ -627,10 +512,10 @@ ${JSON.stringify(previousOutput)}`
             error: errorMessage,
           }
         );
-      } catch (error) {
+      } catch (dbError) {
         console.error(
-          "Failed to mark workflow as failed:",
-          error
+          "Could not update failed workflow:",
+          dbError
         );
       }
 
@@ -645,6 +530,163 @@ ${JSON.stringify(previousOutput)}`
           stepRunId,
       });
     }
+
+    // ============================================================
+    // 6. COMPLETE CURRENT STEP
+    // ============================================================
+
+    const completeStepMutation = `
+      mutation CompleteStep(
+        $id: uuid!
+        $output: jsonb
+      ) {
+        update_step_runs_by_pk(
+          pk_columns: {
+            id: $id
+          }
+          _set: {
+            status: "completed"
+            output: $output
+          }
+        ) {
+          id
+          status
+          output
+        }
+      }
+    `;
+
+    await graphqlRequest(
+      completeStepMutation,
+      {
+        id: stepRunId,
+        output: stepOutput,
+      }
+    );
+
+    console.log(
+      `Completed: ${step.name}`
+    );
+
+    // ============================================================
+    // 7. CREATE NEXT STEP
+    // ============================================================
+
+    if (nextStep) {
+      const createNextStepMutation = `
+        mutation CreateNextStep(
+          $workflow_run_id: uuid!
+          $workflow_step_id: uuid!
+          $input: jsonb
+        ) {
+          insert_step_runs_one(
+            object: {
+              workflow_run_id: $workflow_run_id
+              workflow_step_id: $workflow_step_id
+              status: "pending"
+              input: $input
+            }
+          ) {
+            id
+            status
+          }
+        }
+      `;
+
+      await graphqlRequest(
+        createNextStepMutation,
+        {
+          workflow_run_id:
+            workflowRunId,
+
+          workflow_step_id:
+            nextStep.id,
+
+          input: {
+            previous_output:
+              stepOutput,
+          },
+        }
+      );
+
+      console.log(
+        `Next step created: ${nextStep.name}`
+      );
+
+      return res.status(200).json({
+        success: true,
+        message:
+          "Step completed and next step started",
+
+        workflow_run_id:
+          workflowRunId,
+
+        step_run_id:
+          stepRunId,
+
+        completed_step:
+          step.name,
+
+        next_step:
+          nextStep.name,
+
+        duration_ms:
+          Date.now() - startTime,
+      });
+    }
+
+    // ============================================================
+    // 8. NO NEXT STEP → COMPLETE WORKFLOW
+    // ============================================================
+
+    const completeWorkflowMutation = `
+      mutation CompleteWorkflow(
+        $id: uuid!
+      ) {
+        update_workflow_runs_by_pk(
+          pk_columns: {
+            id: $id
+          }
+          _set: {
+            status: "completed"
+          }
+        ) {
+          id
+          status
+          completed_at
+        }
+      }
+    `;
+
+    await graphqlRequest(
+      completeWorkflowMutation,
+      {
+        id: workflowRunId,
+      }
+    );
+
+    console.log(
+      `Workflow completed: ${workflowRunId}`
+    );
+
+    return res.status(200).json({
+      success: true,
+
+      message:
+        "Workflow completed successfully",
+
+      workflow_run_id:
+        workflowRunId,
+
+      completed_step:
+        step.name,
+
+      status:
+        "completed",
+
+      duration_ms:
+        Date.now() - startTime,
+    });
   } catch (error) {
     console.error(
       "Function error:",
@@ -653,11 +695,16 @@ ${JSON.stringify(previousOutput)}`
 
     return res.status(500).json({
       success: false,
+
       message:
         "Internal server error",
+
       error:
         error?.message ||
         "Unknown error",
+
+      duration_ms:
+        Date.now() - startTime,
     });
   }
 };
