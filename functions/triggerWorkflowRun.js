@@ -292,6 +292,7 @@ export default async (req, res) => {
     // --------------------------------------------------
     // 7. Execute every workflow step
     // --------------------------------------------------
+    let previousOutput = null;
 
     for (const step of steps) {
       console.log(
@@ -413,10 +414,17 @@ export default async (req, res) => {
         if (step.type === "llm") {
           const config = step.config || {};
 
-          const prompt =
+          const basePrompt =
             config.prompt ??
             config.message ??
             step.name;
+
+          const prompt = previousOutput
+            ? `${basePrompt}
+
+          Previous step output:
+          ${JSON.stringify(previousOutput)}`
+            : basePrompt;
 
           const model =
             config.model ??
@@ -622,6 +630,7 @@ export default async (req, res) => {
           );
         }
 
+        previousOutput = stepOutput;
         console.log(
           `Completed step: ${step.name}`
         );
