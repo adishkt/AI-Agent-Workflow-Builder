@@ -179,6 +179,7 @@ export default async (req, res) => {
       const stepRunResult =
         await stepRunResponse.json();
 
+      // 8. Check step run creation
       if (
         !stepRunResponse.ok ||
         stepRunResult.errors
@@ -197,12 +198,78 @@ export default async (req, res) => {
         });
       }
 
+      // Get the newly created step run
+      const stepRun =
+        stepRunResult.data.insert_step_runs_one;
+
       console.log(
-        `Created step_run for step: ${step.name}`
+        `Created step_run for step: ${step.name}`,
+        stepRun.id
+      );
+
+      // 9. Change step_run from pending → running
+      const startStepRunMutation = `
+        mutation StartStepRun($step_run_id: uuid!) {
+          update_step_runs_by_pk(
+            pk_columns: {
+              id: $step_run_id
+            }
+            _set: {
+              status: "running"
+            }
+          ) {
+            id
+            status
+          }
+        }
+      `;
+
+      const startStepRunResponse = await fetch(
+        process.env.NHOST_GRAPHQL_URL,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-hasura-admin-secret":
+              process.env.NHOST_ADMIN_SECRET,
+          },
+          body: JSON.stringify({
+            query: startStepRunMutation,
+            variables: {
+              step_run_id: stepRun.id,
+            },
+          }),
+        }
+      );
+
+      const startStepRunResult =
+        await startStepRunResponse.json();
+
+      // 10. Check step start
+      if (
+        !startStepRunResponse.ok ||
+        startStepRunResult.errors
+      ) {
+        console.error(
+          `Failed to start step_run for ${step.name}:`,
+          startStepRunResult.errors
+        );
+
+        return res.status(500).json({
+          success: false,
+          message:
+            `Failed to start step run for ${step.name}`,
+          workflow_id: workflowId,
+          run_id: run.id,
+        });
+      }
+
+      console.log(
+        `Started step_run for step: ${step.name}`
       );
     }
 
-    // 8. Start the workflow run
+    // 11. Start workflow run
     const startedAt = new Date().toISOString();
 
     const startWorkflowRunMutation = `
@@ -250,7 +317,7 @@ export default async (req, res) => {
 
     const startResult = await startResponse.json();
 
-    // 9. Check workflow start
+    // 12. Check workflow start
     if (!startResponse.ok || startResult.errors) {
       console.error(
         "Failed to start workflow run:",
@@ -268,7 +335,7 @@ export default async (req, res) => {
     const startedRun =
       startResult.data.update_workflow_runs_by_pk;
 
-    // 10. Return result
+    // 13. Return result
     return res.status(200).json({
       success: true,
       message: "Workflow run started",
