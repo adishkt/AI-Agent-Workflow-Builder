@@ -163,7 +163,6 @@ export default async (req, res) => {
           pk_columns: { id: $id }
           _set: {
             status: "running"
-            started_at: "now()"
           }
         ) {
           id
@@ -202,6 +201,13 @@ export default async (req, res) => {
         "Failed to start workflow run:",
         startRunResult.errors
       );
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to start workflow run",
+        workflow_id: workflowId,
+        run_id: runId,
+      });
     }
 
     // --------------------------------------------------
@@ -308,7 +314,7 @@ export default async (req, res) => {
         }
       `;
 
-      await fetch(
+      const startStepRunResponse = await fetch(
         process.env.NHOST_GRAPHQL_URL,
         {
           method: "POST",
@@ -325,6 +331,23 @@ export default async (req, res) => {
           }),
         }
       );
+
+      const startStepRunResult =
+        await startStepRunResponse.json();
+
+      if (
+        !startStepRunResponse.ok ||
+        startStepRunResult.errors
+      ) {
+        console.error(
+          "Failed to start step_run:",
+          startStepRunResult.errors
+        );
+
+        throw new Error(
+          `Failed to start step ${step.name}`
+        );
+      }
 
       // ------------------------------------------------
       // 7. Execute step based on its type
@@ -350,7 +373,25 @@ export default async (req, res) => {
             "openrouter/free";
 
           console.log(
-            `Executing LLM step using model: ${model}`
+            "======================================"
+          );
+          console.log(
+            `Executing LLM step: ${step.name}`
+          );
+          console.log(
+            `OpenRouter model: ${model}`
+          );
+          console.log(
+            `Prompt: ${prompt}`
+          );
+          console.log(
+            "OpenRouter API key configured:",
+            Boolean(
+              process.env.OPENROUTER_API_KEY
+            )
+          );
+          console.log(
+            "======================================"
           );
 
           if (!process.env.OPENROUTER_API_KEY) {
@@ -369,7 +410,8 @@ export default async (req, res) => {
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
-                Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+                Authorization:
+                  `Bearer ${process.env.OPENROUTER_API_KEY}`,
               },
               body: JSON.stringify({
                 model,
@@ -387,15 +429,24 @@ export default async (req, res) => {
             await llmResponse.json();
 
           // --------------------------------------------
+          // Debug OpenRouter response
+          // --------------------------------------------
+
+          console.log(
+            "OpenRouter status:",
+            llmResponse.status
+          );
+
+          console.log(
+            "OpenRouter response:",
+            JSON.stringify(llmResult)
+          );
+
+          // --------------------------------------------
           // Check LLM response
           // --------------------------------------------
 
           if (!llmResponse.ok) {
-            console.error(
-              "OpenRouter error:",
-              llmResult
-            );
-
             throw new Error(
               llmResult?.error?.message ||
                 "OpenRouter request failed"
@@ -417,7 +468,8 @@ export default async (req, res) => {
 
           stepOutput = {
             text: aiText,
-            model: llmResult.model || model,
+            model:
+              llmResult.model || model,
           };
         }
 
@@ -565,7 +617,6 @@ export default async (req, res) => {
               _set: {
                 status: "failed"
                 error: $error
-                completed_at: "now()"
               }
             ) {
               id
@@ -576,34 +627,43 @@ export default async (req, res) => {
           }
         `;
 
-        await fetch(
-          process.env.NHOST_GRAPHQL_URL,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-hasura-admin-secret":
-                process.env.NHOST_ADMIN_SECRET,
-            },
-            body: JSON.stringify({
-              query: failWorkflowMutation,
-              variables: {
-                id: runId,
-                error: errorMessage,
+        const failWorkflowResponse =
+          await fetch(
+            process.env.NHOST_GRAPHQL_URL,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "x-hasura-admin-secret":
+                  process.env.NHOST_ADMIN_SECRET,
               },
-            }),
-          }
+              body: JSON.stringify({
+                query: failWorkflowMutation,
+                variables: {
+                  id: runId,
+                  error: errorMessage,
+                },
+              }),
+            }
+          );
+
+        const failWorkflowResult =
+          await failWorkflowResponse.json();
+
+        console.error(
+          "Workflow failure update result:",
+          JSON.stringify(failWorkflowResult)
         );
 
         // ----------------------------------------------
-        // IMPORTANT:
-        // Return 200 so Hasura Action doesn't produce
-        // "expecting 2xx or 4xx, but found 500"
+        // Return 200 so Hasura receives a valid response
         // ----------------------------------------------
 
         return res.status(200).json({
           success: false,
-          message: `Step execution failed: ${step.name}`,
+          message:
+            `Step execution failed: ${step.name}`,
+          error: errorMessage,
           workflow_id: workflowId,
           run_id: runId,
         });
@@ -620,7 +680,6 @@ export default async (req, res) => {
           pk_columns: { id: $id }
           _set: {
             status: "completed"
-            completed_at: "now()"
           }
         ) {
           id
@@ -663,7 +722,8 @@ export default async (req, res) => {
 
       return res.status(500).json({
         success: false,
-        message: "Workflow completed but status update failed",
+        message:
+          "Workflow completed but status update failed",
         workflow_id: workflowId,
         run_id: runId,
       });
