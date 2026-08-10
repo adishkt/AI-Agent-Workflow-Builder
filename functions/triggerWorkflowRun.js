@@ -267,6 +267,134 @@ export default async (req, res) => {
       console.log(
         `Started step_run for step: ${step.name}`
       );
+
+      // Execute the step
+      let stepOutput;
+
+      try {
+        if (step.type === "log") {
+          stepOutput = {
+            message: step.config?.message ?? step.name,
+          };
+        } else {
+          throw new Error(`Unsupported step type: ${step.type}`);
+        }
+      } catch (error) {
+        console.error(
+          `Step execution failed for ${step.name}:`,
+          error
+        );
+
+        const failStepMutation = `
+          mutation FailStepRun(
+            $step_run_id: uuid!
+            $error: String!
+          ) {
+            update_step_runs_by_pk(
+              pk_columns: {
+                id: $step_run_id
+              }
+              _set: {
+                status: "failed"
+                error: $error
+              }
+            ) {
+              id
+              status
+              error
+            }
+          }
+        `;
+
+        await fetch(process.env.NHOST_GRAPHQL_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-hasura-admin-secret":
+              process.env.NHOST_ADMIN_SECRET,
+          },
+          body: JSON.stringify({
+            query: failStepMutation,
+            variables: {
+              step_run_id: stepRun.id,
+              error: error.message,
+            },
+          }),
+        });
+
+        return res.status(500).json({
+          success: false,
+          message: `Step execution failed: ${step.name}`,
+          workflow_id: workflowId,
+          run_id: run.id,
+        });
+      }
+
+      // Save step output and mark completed
+      const completeStepMutation = `
+        mutation CompleteStepRun(
+          $step_run_id: uuid!
+          $output: jsonb!
+        ) {
+          update_step_runs_by_pk(
+            pk_columns: {
+              id: $step_run_id
+            }
+            _set: {
+              status: "completed"
+              output: $output
+            }
+          ) {
+            id
+            status
+            output
+          }
+        }
+      `;
+
+      const completeStepResponse = await fetch(
+        process.env.NHOST_GRAPHQL_URL,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-hasura-admin-secret":
+              process.env.NHOST_ADMIN_SECRET,
+          },
+          body: JSON.stringify({
+            query: completeStepMutation,
+            variables: {
+              step_run_id: stepRun.id,
+              output: stepOutput,
+            },
+          }),
+        }
+      );
+
+      const completeStepResult =
+        await completeStepResponse.json();
+
+      if (
+        !completeStepResponse.ok ||
+        completeStepResult.errors
+      ) {
+        console.error(
+          `Failed to complete step ${step.name}:`,
+          completeStepResult.errors
+        );
+
+        return res.status(500).json({
+          success: false,
+          message: `Failed to complete step ${step.name}`,
+          workflow_id: workflowId,
+          run_id: run.id,
+        });
+      }
+
+      console.log(
+        `Completed step: ${step.name}`,
+        stepOutput
+      );
     }
 
     // 11. Start workflow run
