@@ -1,5 +1,9 @@
 [global]
 
+[[global.environment]]
+name = 'OPENROUTER_API_KEY'
+value = '{{ secrets.OPENROUTER_API_KEY }}'
+
 [hasura]
 version = 'v2.48.10-ce'
 adminSecret = '{{ secrets.HASURA_GRAPHQL_ADMIN_SECRET }}'
