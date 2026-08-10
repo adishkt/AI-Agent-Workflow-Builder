@@ -1,7 +1,25 @@
 export default async (req, res) => {
   try {
     // --------------------------------------------------
-    // 1. Get workflow ID from Hasura Action input
+    // 0. CORS
+    // --------------------------------------------------
+
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader(
+      "Access-Control-Allow-Headers",
+      "origin,Accept,Authorization,Content-Type"
+    );
+    res.setHeader(
+      "Access-Control-Allow-Methods",
+      "POST,OPTIONS"
+    );
+
+    if (req.method === "OPTIONS") {
+      return res.status(204).send("");
+    }
+
+    // --------------------------------------------------
+    // 1. Get workflow ID
     // --------------------------------------------------
 
     const workflowId = req.body?.input?.workflow_id;
@@ -15,14 +33,108 @@ export default async (req, res) => {
     }
 
     // --------------------------------------------------
-    // 2. Get workflow steps
+    // 2. Validate environment variables
+    // --------------------------------------------------
+
+    if (!process.env.NHOST_GRAPHQL_URL) {
+      return res.status(500).json({
+        success: false,
+        message: "NHOST_GRAPHQL_URL is not configured",
+        workflow_id: workflowId,
+      });
+    }
+
+    if (!process.env.NHOST_ADMIN_SECRET) {
+      return res.status(500).json({
+        success: false,
+        message: "NHOST_ADMIN_SECRET is not configured",
+        workflow_id: workflowId,
+      });
+    }
+
+    // --------------------------------------------------
+    // Helper: GraphQL request
+    // --------------------------------------------------
+
+    const graphqlRequest = async (query, variables = {}) => {
+      const response = await fetch(
+        process.env.NHOST_GRAPHQL_URL,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-hasura-admin-secret":
+              process.env.NHOST_ADMIN_SECRET,
+          },
+          body: JSON.stringify({
+            query,
+            variables,
+          }),
+        }
+      );
+
+      const text = await response.text();
+
+      let result;
+
+      try {
+        result = JSON.parse(text);
+      } catch {
+        throw new Error(
+          `GraphQL returned invalid JSON: ${text}`
+        );
+      }
+
+      if (!response.ok || result.errors) {
+        throw new Error(
+          result.errors?.[0]?.message ||
+            `GraphQL request failed with status ${response.status}`
+        );
+      }
+
+      return result.data;
+    };
+
+    // --------------------------------------------------
+    // Helper: fetch with timeout
+    // --------------------------------------------------
+
+    const fetchWithTimeout = async (
+      url,
+      options = {},
+      timeoutMs = 7000
+    ) => {
+      const controller = new AbortController();
+
+      const timeout = setTimeout(() => {
+        controller.abort();
+      }, timeoutMs);
+
+      try {
+        return await fetch(url, {
+          ...options,
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeout);
+      }
+    };
+
+    // --------------------------------------------------
+    // 3. Get workflow steps
     // --------------------------------------------------
 
     const stepsQuery = `
       query GetWorkflowSteps($workflow_id: uuid!) {
         workflow_steps(
-          where: { workflow_id: { _eq: $workflow_id } }
-          order_by: { step_order: asc }
+          where: {
+            workflow_id: {
+              _eq: $workflow_id
+            }
+          }
+          order_by: {
+            step_order: asc
+          }
         ) {
           id
           workflow_id
@@ -34,43 +146,35 @@ export default async (req, res) => {
       }
     `;
 
-    const stepsResponse = await fetch(
-      process.env.NHOST_GRAPHQL_URL,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-hasura-admin-secret":
-            process.env.NHOST_ADMIN_SECRET,
-        },
-        body: JSON.stringify({
-          query: stepsQuery,
-          variables: {
-            workflow_id: workflowId,
-          },
-        }),
-      }
-    );
+    let stepsResult;
 
-    const stepsResult = await stepsResponse.json();
+    try {
+      const data = await graphqlRequest(
+        stepsQuery,
+        {
+          workflow_id: workflowId,
+        }
+      );
 
-    if (!stepsResponse.ok || stepsResult.errors) {
+      stepsResult = data;
+    } catch (error) {
       console.error(
         "Failed to fetch workflow steps:",
-        stepsResult.errors
+        error
       );
 
       return res.status(500).json({
         success: false,
         message: "Failed to fetch workflow steps",
+        error: error.message,
         workflow_id: workflowId,
       });
     }
 
-    const steps = stepsResult.data.workflow_steps;
+    const steps = stepsResult.workflow_steps || [];
 
     // --------------------------------------------------
-    // 3. Check if workflow has steps
+    // 4. Check workflow steps
     // --------------------------------------------------
 
     if (steps.length === 0) {
@@ -86,11 +190,13 @@ export default async (req, res) => {
     );
 
     // --------------------------------------------------
-    // 4. Create workflow run
+    // 5. Create workflow run
     // --------------------------------------------------
 
     const createRunMutation = `
-      mutation CreateWorkflowRun($workflow_id: uuid!) {
+      mutation CreateWorkflowRun(
+        $workflow_id: uuid!
+      ) {
         insert_workflow_runs_one(
           object: {
             workflow_id: $workflow_id
@@ -107,45 +213,30 @@ export default async (req, res) => {
       }
     `;
 
-    const createRunResponse = await fetch(
-      process.env.NHOST_GRAPHQL_URL,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-hasura-admin-secret":
-            process.env.NHOST_ADMIN_SECRET,
-        },
-        body: JSON.stringify({
-          query: createRunMutation,
-          variables: {
-            workflow_id: workflowId,
-          },
-        }),
-      }
-    );
+    let run;
 
-    const createRunResult =
-      await createRunResponse.json();
+    try {
+      const data = await graphqlRequest(
+        createRunMutation,
+        {
+          workflow_id: workflowId,
+        }
+      );
 
-    if (
-      !createRunResponse.ok ||
-      createRunResult.errors
-    ) {
+      run = data.insert_workflow_runs_one;
+    } catch (error) {
       console.error(
         "Failed to create workflow run:",
-        createRunResult.errors
+        error
       );
 
       return res.status(500).json({
         success: false,
         message: "Failed to create workflow run",
+        error: error.message,
         workflow_id: workflowId,
       });
     }
-
-    const run =
-      createRunResult.data.insert_workflow_runs_one;
 
     const runId = run.id;
 
@@ -154,13 +245,17 @@ export default async (req, res) => {
     );
 
     // --------------------------------------------------
-    // 5. Mark workflow run as running
+    // 6. Mark workflow run as running
     // --------------------------------------------------
 
     const startRunMutation = `
-      mutation StartWorkflowRun($id: uuid!) {
+      mutation StartWorkflowRun(
+        $id: uuid!
+      ) {
         update_workflow_runs_by_pk(
-          pk_columns: { id: $id }
+          pk_columns: {
+            id: $id
+          }
           _set: {
             status: "running"
           }
@@ -172,46 +267,30 @@ export default async (req, res) => {
       }
     `;
 
-    const startRunResponse = await fetch(
-      process.env.NHOST_GRAPHQL_URL,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-hasura-admin-secret":
-            process.env.NHOST_ADMIN_SECRET,
-        },
-        body: JSON.stringify({
-          query: startRunMutation,
-          variables: {
-            id: runId,
-          },
-        }),
-      }
-    );
-
-    const startRunResult =
-      await startRunResponse.json();
-
-    if (
-      !startRunResponse.ok ||
-      startRunResult.errors
-    ) {
+    try {
+      await graphqlRequest(
+        startRunMutation,
+        {
+          id: runId,
+        }
+      );
+    } catch (error) {
       console.error(
         "Failed to start workflow run:",
-        startRunResult.errors
+        error
       );
 
       return res.status(500).json({
         success: false,
         message: "Failed to start workflow run",
+        error: error.message,
         workflow_id: workflowId,
         run_id: runId,
       });
     }
 
     // --------------------------------------------------
-    // 6. Execute every workflow step
+    // 7. Execute every workflow step
     // --------------------------------------------------
 
     for (const step of steps) {
@@ -250,45 +329,29 @@ export default async (req, res) => {
         config: step.config,
       };
 
-      const createStepRunResponse = await fetch(
-        process.env.NHOST_GRAPHQL_URL,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-hasura-admin-secret":
-              process.env.NHOST_ADMIN_SECRET,
-          },
-          body: JSON.stringify({
-            query: createStepRunMutation,
-            variables: {
-              workflow_run_id: runId,
-              workflow_step_id: step.id,
-              input: stepInput,
-            },
-          }),
-        }
-      );
+      let stepRun;
 
-      const createStepRunResult =
-        await createStepRunResponse.json();
+      try {
+        const data = await graphqlRequest(
+          createStepRunMutation,
+          {
+            workflow_run_id: runId,
+            workflow_step_id: step.id,
+            input: stepInput,
+          }
+        );
 
-      if (
-        !createStepRunResponse.ok ||
-        createStepRunResult.errors
-      ) {
+        stepRun = data.insert_step_runs_one;
+      } catch (error) {
         console.error(
           "Failed to create step_run:",
-          createStepRunResult.errors
+          error
         );
 
         throw new Error(
-          `Failed to create step_run for ${step.name}`
+          `Failed to create step_run for ${step.name}: ${error.message}`
         );
       }
-
-      const stepRun =
-        createStepRunResult.data.insert_step_runs_one;
 
       const stepRunId = stepRun.id;
 
@@ -301,9 +364,13 @@ export default async (req, res) => {
       // ------------------------------------------------
 
       const startStepRunMutation = `
-        mutation StartStepRun($id: uuid!) {
+        mutation StartStepRun(
+          $id: uuid!
+        ) {
           update_step_runs_by_pk(
-            pk_columns: { id: $id }
+            pk_columns: {
+              id: $id
+            }
             _set: {
               status: "running"
             }
@@ -314,43 +381,26 @@ export default async (req, res) => {
         }
       `;
 
-      const startStepRunResponse = await fetch(
-        process.env.NHOST_GRAPHQL_URL,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-hasura-admin-secret":
-              process.env.NHOST_ADMIN_SECRET,
-          },
-          body: JSON.stringify({
-            query: startStepRunMutation,
-            variables: {
-              id: stepRunId,
-            },
-          }),
-        }
-      );
-
-      const startStepRunResult =
-        await startStepRunResponse.json();
-
-      if (
-        !startStepRunResponse.ok ||
-        startStepRunResult.errors
-      ) {
+      try {
+        await graphqlRequest(
+          startStepRunMutation,
+          {
+            id: stepRunId,
+          }
+        );
+      } catch (error) {
         console.error(
           "Failed to start step_run:",
-          startStepRunResult.errors
+          error
         );
 
         throw new Error(
-          `Failed to start step ${step.name}`
+          `Failed to start step ${step.name}: ${error.message}`
         );
       }
 
       // ------------------------------------------------
-      // 7. Execute step based on its type
+      // Execute step
       // ------------------------------------------------
 
       try {
@@ -375,24 +425,33 @@ export default async (req, res) => {
           console.log(
             "======================================"
           );
+
           console.log(
             `Executing LLM step: ${step.name}`
           );
+
           console.log(
             `OpenRouter model: ${model}`
           );
+
           console.log(
             `Prompt: ${prompt}`
           );
+
           console.log(
             "OpenRouter API key configured:",
             Boolean(
               process.env.OPENROUTER_API_KEY
             )
           );
+
           console.log(
             "======================================"
           );
+
+          // --------------------------------------------
+          // Check API key
+          // --------------------------------------------
 
           if (!process.env.OPENROUTER_API_KEY) {
             throw new Error(
@@ -404,33 +463,74 @@ export default async (req, res) => {
           // Call OpenRouter
           // --------------------------------------------
 
-          const llmResponse = await fetch(
-            "https://openrouter.ai/api/v1/chat/completions",
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                Authorization:
-                  `Bearer ${process.env.OPENROUTER_API_KEY}`,
-              },
-              body: JSON.stringify({
-                model,
-                messages: [
-                  {
-                    role: "user",
-                    content: prompt,
+          let llmResponse;
+
+          try {
+            llmResponse =
+              await fetchWithTimeout(
+                "https://openrouter.ai/api/v1/chat/completions",
+                {
+                  method: "POST",
+
+                  headers: {
+                    "Content-Type":
+                      "application/json",
+
+                    Authorization:
+                      `Bearer ${process.env.OPENROUTER_API_KEY}`,
+
+                    "HTTP-Referer":
+                      "https://app.nhost.io",
+
+                    "X-Title":
+                      "AI Agent Workflow Builder",
                   },
-                ],
-              }),
+
+                  body: JSON.stringify({
+                    model,
+
+                    messages: [
+                      {
+                        role: "user",
+                        content: prompt,
+                      },
+                    ],
+                  }),
+                },
+
+                7000
+              );
+          } catch (error) {
+            if (
+              error.name === "AbortError"
+            ) {
+              throw new Error(
+                "OpenRouter request timed out after 7 seconds"
+              );
             }
-          );
 
-          const llmResult =
-            await llmResponse.json();
+            throw new Error(
+              `Could not connect to OpenRouter: ${error.message}`
+            );
+          }
 
           // --------------------------------------------
-          // Debug OpenRouter response
+          // Read response
           // --------------------------------------------
+
+          const responseText =
+            await llmResponse.text();
+
+          let llmResult;
+
+          try {
+            llmResult =
+              JSON.parse(responseText);
+          } catch {
+            throw new Error(
+              `OpenRouter returned invalid JSON: ${responseText}`
+            );
+          }
 
           console.log(
             "OpenRouter status:",
@@ -443,13 +543,13 @@ export default async (req, res) => {
           );
 
           // --------------------------------------------
-          // Check LLM response
+          // Check response
           // --------------------------------------------
 
           if (!llmResponse.ok) {
             throw new Error(
               llmResult?.error?.message ||
-                "OpenRouter request failed"
+                `OpenRouter request failed with status ${llmResponse.status}`
             );
           }
 
@@ -484,7 +584,7 @@ export default async (req, res) => {
         }
 
         // ------------------------------------------------
-        // 8. Save successful step output
+        // Save successful step output
         // ------------------------------------------------
 
         const completeStepRunMutation = `
@@ -493,7 +593,9 @@ export default async (req, res) => {
             $output: jsonb
           ) {
             update_step_runs_by_pk(
-              pk_columns: { id: $id }
+              pk_columns: {
+                id: $id
+              }
               _set: {
                 status: "completed"
                 output: $output
@@ -506,41 +608,17 @@ export default async (req, res) => {
           }
         `;
 
-        const completeStepRunResponse =
-          await fetch(
-            process.env.NHOST_GRAPHQL_URL,
+        try {
+          await graphqlRequest(
+            completeStepRunMutation,
             {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "x-hasura-admin-secret":
-                  process.env.NHOST_ADMIN_SECRET,
-              },
-              body: JSON.stringify({
-                query:
-                  completeStepRunMutation,
-                variables: {
-                  id: stepRunId,
-                  output: stepOutput,
-                },
-              }),
+              id: stepRunId,
+              output: stepOutput,
             }
           );
-
-        const completeStepRunResult =
-          await completeStepRunResponse.json();
-
-        if (
-          !completeStepRunResponse.ok ||
-          completeStepRunResult.errors
-        ) {
-          console.error(
-            "Failed to complete step_run:",
-            completeStepRunResult.errors
-          );
-
+        } catch (error) {
           throw new Error(
-            `Failed to save output for ${step.name}`
+            `Failed to save output for ${step.name}: ${error.message}`
           );
         }
 
@@ -571,7 +649,9 @@ export default async (req, res) => {
             $error: String!
           ) {
             update_step_runs_by_pk(
-              pk_columns: { id: $id }
+              pk_columns: {
+                id: $id
+              }
               _set: {
                 status: "failed"
                 error: $error
@@ -584,24 +664,20 @@ export default async (req, res) => {
           }
         `;
 
-        await fetch(
-          process.env.NHOST_GRAPHQL_URL,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-hasura-admin-secret":
-                process.env.NHOST_ADMIN_SECRET,
-            },
-            body: JSON.stringify({
-              query: failStepRunMutation,
-              variables: {
-                id: stepRunId,
-                error: errorMessage,
-              },
-            }),
-          }
-        );
+        try {
+          await graphqlRequest(
+            failStepRunMutation,
+            {
+              id: stepRunId,
+              error: errorMessage,
+            }
+          );
+        } catch (error) {
+          console.error(
+            "Failed to save step failure:",
+            error
+          );
+        }
 
         // ----------------------------------------------
         // Mark workflow as failed
@@ -613,7 +689,9 @@ export default async (req, res) => {
             $error: String!
           ) {
             update_workflow_runs_by_pk(
-              pk_columns: { id: $id }
+              pk_columns: {
+                id: $id
+              }
               _set: {
                 status: "failed"
                 error: $error
@@ -627,38 +705,23 @@ export default async (req, res) => {
           }
         `;
 
-        const failWorkflowResponse =
-          await fetch(
-            process.env.NHOST_GRAPHQL_URL,
+        try {
+          await graphqlRequest(
+            failWorkflowMutation,
             {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "x-hasura-admin-secret":
-                  process.env.NHOST_ADMIN_SECRET,
-              },
-              body: JSON.stringify({
-                query: failWorkflowMutation,
-                variables: {
-                  id: runId,
-                  error: errorMessage,
-                },
-              }),
+              id: runId,
+              error: errorMessage,
             }
           );
+        } catch (error) {
+          console.error(
+            "Failed to update workflow failure:",
+            error
+          );
+        }
 
-        const failWorkflowResult =
-          await failWorkflowResponse.json();
-
-        console.error(
-          "Workflow failure update result:",
-          JSON.stringify(failWorkflowResult)
-        );
-
-        // ----------------------------------------------
-        // Return 200 so Hasura receives a valid response
-        // ----------------------------------------------
-
+        // IMPORTANT:
+        // Return 200 so Hasura Action gets a valid response.
         return res.status(200).json({
           success: false,
           message:
@@ -671,13 +734,17 @@ export default async (req, res) => {
     }
 
     // --------------------------------------------------
-    // 9. All steps completed
+    // 8. All steps completed
     // --------------------------------------------------
 
     const completeWorkflowMutation = `
-      mutation CompleteWorkflowRun($id: uuid!) {
+      mutation CompleteWorkflowRun(
+        $id: uuid!
+      ) {
         update_workflow_runs_by_pk(
-          pk_columns: { id: $id }
+          pk_columns: {
+            id: $id
+          }
           _set: {
             status: "completed"
           }
@@ -689,53 +756,37 @@ export default async (req, res) => {
       }
     `;
 
-    const completeWorkflowResponse =
-      await fetch(
-        process.env.NHOST_GRAPHQL_URL,
+    try {
+      await graphqlRequest(
+        completeWorkflowMutation,
         {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-hasura-admin-secret":
-              process.env.NHOST_ADMIN_SECRET,
-          },
-          body: JSON.stringify({
-            query: completeWorkflowMutation,
-            variables: {
-              id: runId,
-            },
-          }),
+          id: runId,
         }
       );
-
-    const completeWorkflowResult =
-      await completeWorkflowResponse.json();
-
-    if (
-      !completeWorkflowResponse.ok ||
-      completeWorkflowResult.errors
-    ) {
+    } catch (error) {
       console.error(
         "Failed to complete workflow run:",
-        completeWorkflowResult.errors
+        error
       );
 
       return res.status(500).json({
         success: false,
         message:
           "Workflow completed but status update failed",
+        error: error.message,
         workflow_id: workflowId,
         run_id: runId,
       });
     }
 
     // --------------------------------------------------
-    // 10. Final successful response
+    // 9. Final response
     // --------------------------------------------------
 
     return res.status(200).json({
       success: true,
-      message: "Workflow completed successfully",
+      message:
+        "Workflow completed successfully",
       workflow_id: workflowId,
       run_id: runId,
       status: "completed",
@@ -754,6 +805,7 @@ export default async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Internal server error",
+      error: error?.message || "Unknown error",
       workflow_id: null,
     });
   }
