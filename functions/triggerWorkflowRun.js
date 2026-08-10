@@ -1,6 +1,4 @@
-import type { Request, Response } from "express";
-
-export default (req: Request, res: Response) => {
+export default (req, res) => {
   const workflowId = req.body?.input?.workflow_id ?? null;
 
   res.status(200).json({
