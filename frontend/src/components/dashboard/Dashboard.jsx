@@ -1,14 +1,20 @@
+import { useState } from "react";
 import { nhost } from "../../lib/nhost";
+
 import WorkflowList from "../workflow/WorkflowList";
+import WorkflowForm from "../workflow/WorkflowForm";
+import WorkflowEditor from "../workflow/WorkflowEditor";
 
 function Dashboard({ user, onLogout }) {
+  const [showCreateForm, setShowCreateForm] = useState(false);
+
+  const [selectedWorkflow, setSelectedWorkflow] =useState(null);
+
   const handleLogout = async () => {
     try {
-      // Get the current Nhost session
       const session = nhost.getUserSession();
 
       if (session) {
-        // Invalidate the refresh token on the server
         const result = await nhost.auth.signOut({
           refreshToken: session.refreshToken,
         });
@@ -22,7 +28,6 @@ function Dashboard({ user, onLogout }) {
         }
       }
 
-      // Clear React authentication state
       onLogout();
     } catch (error) {
       console.error(
@@ -44,7 +49,41 @@ function Dashboard({ user, onLogout }) {
         Logout
       </button>
 
-      <WorkflowList />
+      <hr />
+
+      {showCreateForm ? (
+        <WorkflowForm
+          onCreated={() => {
+            setShowCreateForm(false);
+          }}
+          onCancel={() => {
+            setShowCreateForm(false);
+          }}
+        />
+      ) : (
+        <>
+          <button
+            onClick={() => setShowCreateForm(true)}
+          >
+            + Create Workflow
+          </button>
+
+          {selectedWorkflow ? (
+            <WorkflowEditor
+              workflow={selectedWorkflow}
+              onBack={() =>
+                setSelectedWorkflow(null)
+              }
+            />
+          ) : (
+            <WorkflowList
+              onOpenWorkflow={(workflow) =>
+                setSelectedWorkflow(workflow)
+              }
+            />
+          )}
+        </>
+      )}
     </main>
   );
 }
