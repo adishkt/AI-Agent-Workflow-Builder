@@ -27,7 +27,8 @@ export async function getCurrentStep(
     await graphqlRequest(
       query,
       {
-        step_id: workflowStepId,
+        step_id:
+          workflowStepId,
       }
     );
 
@@ -42,6 +43,7 @@ export async function getCurrentStep(
 
   return step;
 }
+
 
 // ============================================================
 // GET NEXT STEP
@@ -88,8 +90,11 @@ export async function getNextStep(
     await graphqlRequest(
       query,
       {
-        workflow_id: workflowId,
-        step_order: stepOrder,
+        workflow_id:
+          workflowId,
+
+        step_order:
+          stepOrder,
       }
     );
 
@@ -98,6 +103,7 @@ export async function getNextStep(
     null
   );
 }
+
 
 // ============================================================
 // GET STEP BY ID
@@ -128,7 +134,8 @@ export async function getStepById(
     await graphqlRequest(
       query,
       {
-        step_id: stepId,
+        step_id:
+          stepId,
       }
     );
 
@@ -143,6 +150,7 @@ export async function getStepById(
 
   return step;
 }
+
 
 // ============================================================
 // MARK STEP AS FAILED
@@ -182,12 +190,18 @@ export async function markStepFailed(
   return graphqlRequest(
     mutation,
     {
-      step_id: stepRunId,
-      error: errorMessage,
-      attempt_count: attemptCount,
+      step_id:
+        stepRunId,
+
+      error:
+        errorMessage,
+
+      attempt_count:
+        attemptCount,
     }
   );
 }
+
 
 // ============================================================
 // PERMANENT FAILURE
@@ -245,13 +259,21 @@ export async function failExecution(
   return graphqlRequest(
     mutation,
     {
-      step_id: stepRunId,
-      workflow_run_id: workflowRunId,
-      error: errorMessage,
-      attempt_count: attemptCount,
+      step_id:
+        stepRunId,
+
+      workflow_run_id:
+        workflowRunId,
+
+      error:
+        errorMessage,
+
+      attempt_count:
+        attemptCount,
     }
   );
 }
+
 
 // ============================================================
 // CREATE RETRY STEP RUN
@@ -282,7 +304,8 @@ export async function createRetryStepRun(
           workflow_step_id:
             $workflow_step_id
 
-          status: "pending"
+          status:
+            "pending"
 
           attempt_count:
             $attempt_count
@@ -319,6 +342,7 @@ export async function createRetryStepRun(
   return data.insert_step_runs_one;
 }
 
+
 // ============================================================
 // COMPLETE CURRENT STEP + CREATE NEXT STEP
 // ============================================================
@@ -347,9 +371,14 @@ export async function completeAndCreateNext(
         }
 
         _set: {
-          status: "completed"
-          output: $output
-          error: null
+          status:
+            "completed"
+
+          output:
+            $output
+
+          error:
+            null
         }
       ) {
         id
@@ -365,7 +394,8 @@ export async function completeAndCreateNext(
           workflow_step_id:
             $next_workflow_step_id
 
-          status: "pending"
+          status:
+            "pending"
 
           input:
             $input
@@ -381,7 +411,8 @@ export async function completeAndCreateNext(
   return graphqlRequest(
     mutation,
     {
-      step_id: stepRunId,
+      step_id:
+        stepRunId,
 
       workflow_run_id:
         workflowRunId,
@@ -398,6 +429,7 @@ export async function completeAndCreateNext(
     }
   );
 }
+
 
 // ============================================================
 // COMPLETE FINAL WORKFLOW
@@ -424,9 +456,14 @@ export async function completeWorkflow(
         }
 
         _set: {
-          status: "completed"
-          output: $output
-          error: null
+          status:
+            "completed"
+
+          output:
+            $output
+
+          error:
+            null
         }
       ) {
         id
@@ -440,8 +477,11 @@ export async function completeWorkflow(
         }
 
         _set: {
-          status: "completed"
-          error: null
+          status:
+            "completed"
+
+          error:
+            null
         }
       ) {
         id
@@ -453,7 +493,8 @@ export async function completeWorkflow(
   return graphqlRequest(
     mutation,
     {
-      step_id: stepRunId,
+      step_id:
+        stepRunId,
 
       workflow_run_id:
         workflowRunId,
@@ -462,6 +503,7 @@ export async function completeWorkflow(
     }
   );
 }
+
 
 // ============================================================
 // PAUSE WORKFLOW AT APPROVAL STEP
@@ -488,9 +530,14 @@ export async function pauseApprovalGate(
         }
 
         _set: {
-          status: "paused"
-          output: $output
-          error: null
+          status:
+            "paused"
+
+          output:
+            $output
+
+          error:
+            null
         }
       ) {
         id
@@ -504,8 +551,11 @@ export async function pauseApprovalGate(
         }
 
         _set: {
-          status: "paused"
-          error: null
+          status:
+            "paused"
+
+          error:
+            null
         }
       ) {
         id
@@ -535,17 +585,28 @@ export async function pauseApprovalGate(
   );
 }
 
+
 // ============================================================
 // APPROVE PAUSED STEP
 //
 // Security:
-// 1. Step must exist.
-// 2. Step must be paused.
-// 3. Step must actually be an approval step.
-// 4. Workflow must exist.
-// 5. Approver must belong to the same organization.
-// 6. Approver must be owner/editor.
-// 7. Approval resumes the workflow.
+//
+// 1. Step run must exist.
+// 2. Step run must be paused.
+// 3. Workflow step must exist.
+// 4. Workflow step must be approval_gate.
+// 5. Workflow must exist.
+// 6. User must belong to workflow organization.
+// 7. User must be owner/editor.
+// 8. Approval gate is completed.
+// 9. Workflow is resumed.
+// 10. Next step run is created.
+//
+// IMPORTANT:
+// The database uses:
+//
+//     type = "approval_gate"
+//
 // ============================================================
 
 export async function approvePausedStep(
@@ -555,8 +616,9 @@ export async function approvePausedStep(
     userId,
   }
 ) {
+
   // ----------------------------------------------------------
-  // 1. Get step run
+  // 1. GET STEP RUN
   // ----------------------------------------------------------
 
   const stepRunQuery = `
@@ -579,7 +641,8 @@ export async function approvePausedStep(
     await graphqlRequest(
       stepRunQuery,
       {
-        step_id: stepRunId,
+        step_id:
+          stepRunId,
       }
     );
 
@@ -592,17 +655,23 @@ export async function approvePausedStep(
     );
   }
 
+
+  // ----------------------------------------------------------
+  // 2. STEP MUST BE PAUSED
+  // ----------------------------------------------------------
+
   if (
-    step.type !==
-    "approval_gate"
+    stepRun.status !==
+    "paused"
   ) {
     throw new Error(
-      "This step is not an approval gate"
+      "This step is not waiting for approval"
     );
   }
 
+
   // ----------------------------------------------------------
-  // 2. Get workflow step
+  // 3. GET WORKFLOW STEP
   // ----------------------------------------------------------
 
   const stepQuery = `
@@ -640,20 +709,23 @@ export async function approvePausedStep(
     );
   }
 
-  // IMPORTANT:
-  // Database uses "approval", not "approval_gate".
+
+  // ----------------------------------------------------------
+  // 4. VERIFY APPROVAL GATE
+  // ----------------------------------------------------------
 
   if (
     step.type !==
     "approval_gate"
   ) {
     throw new Error(
-      "This step is not an approval gate"
+      `This step is not an approval gate. Actual type: ${step.type}`
     );
   }
 
+
   // ----------------------------------------------------------
-  // 3. Get workflow
+  // 5. GET WORKFLOW
   // ----------------------------------------------------------
 
   const workflowQuery = `
@@ -688,8 +760,9 @@ export async function approvePausedStep(
     );
   }
 
+
   // ----------------------------------------------------------
-  // 4. Verify organization membership
+  // 6. VERIFY ORGANIZATION MEMBERSHIP
   // ----------------------------------------------------------
 
   const membershipQuery = `
@@ -738,18 +811,25 @@ export async function approvePausedStep(
     );
   }
 
-  // Owner/editor can approve.
+
+  // ----------------------------------------------------------
+  // 7. VERIFY ROLE
+  // ----------------------------------------------------------
+
   if (
-    membership.role !== "owner" &&
-    membership.role !== "editor"
+    membership.role !==
+      "owner" &&
+    membership.role !==
+      "editor"
   ) {
     throw new Error(
       "Only an owner or editor can approve this step"
     );
   }
 
+
   // ----------------------------------------------------------
-  // 5. Find next step
+  // 8. GET NEXT STEP
   // ----------------------------------------------------------
 
   const nextStep =
@@ -761,12 +841,14 @@ export async function approvePausedStep(
       step.step_order
     );
 
+
   // ----------------------------------------------------------
-  // 6. Approval output
+  // 9. APPROVAL OUTPUT
   // ----------------------------------------------------------
 
   const approvalOutput = {
-    approved: true,
+    approved:
+      true,
 
     approved_by:
       userId,
@@ -775,11 +857,27 @@ export async function approvePausedStep(
       new Date().toISOString(),
   };
 
+
   // ----------------------------------------------------------
-  // 7. Resume workflow with next step
+  // 10. RESUME WITH NEXT STEP
   // ----------------------------------------------------------
 
   if (nextStep) {
+
+    // --------------------------------------------------------
+    // SECURITY CHECK
+    // --------------------------------------------------------
+
+    if (
+      nextStep.workflow_id !==
+      step.workflow_id
+    ) {
+      throw new Error(
+        "Next step belongs to a different workflow"
+      );
+    }
+
+
     const mutation = `
       mutation ApproveAndContinue(
         $step_id: uuid!
@@ -797,7 +895,8 @@ export async function approvePausedStep(
           }
 
           _set: {
-            status: "completed"
+            status:
+              "completed"
 
             approved_by:
               $approved_by
@@ -808,7 +907,8 @@ export async function approvePausedStep(
             output:
               $output
 
-            error: null
+            error:
+              null
           }
         ) {
           id
@@ -824,8 +924,11 @@ export async function approvePausedStep(
           }
 
           _set: {
-            status: "running"
-            error: null
+            status:
+              "running"
+
+            error:
+              null
           }
         ) {
           id
@@ -840,7 +943,8 @@ export async function approvePausedStep(
             workflow_step_id:
               $next_step_id
 
-            status: "pending"
+            status:
+              "pending"
 
             input:
               $input
@@ -848,42 +952,59 @@ export async function approvePausedStep(
         ) {
           id
           status
+          workflow_run_id
+          workflow_step_id
           input
         }
       }
     `;
 
-    return graphqlRequest(
-      mutation,
-      {
-        step_id:
-          stepRunId,
+    const result =
+      await graphqlRequest(
+        mutation,
+        {
+          step_id:
+            stepRunId,
 
-        workflow_run_id:
-          stepRun.workflow_run_id,
+          workflow_run_id:
+            stepRun.workflow_run_id,
 
-        next_step_id:
-          nextStep.id,
+          next_step_id:
+            nextStep.id,
 
-        approved_by:
-          userId,
+          approved_by:
+            userId,
 
-        approved_at:
-          approvalOutput.approved_at,
+          approved_at:
+            approvalOutput.approved_at,
 
-        output:
-          approvalOutput,
-
-        input: {
-          previous_output:
+          output:
             approvalOutput,
-        },
-      }
-    );
+
+          input: {
+            previous_output:
+              approvalOutput,
+          },
+        }
+      );
+
+    return {
+      ...result,
+
+      workflow_run_id:
+        stepRun.workflow_run_id,
+
+      step_run_id:
+        stepRunId,
+
+      next_step_id:
+        nextStep.id,
+    };
   }
 
+
   // ----------------------------------------------------------
-  // 8. Approval is final workflow step
+  // 11. APPROVAL IS FINAL WORKFLOW STEP
   // ----------------------------------------------------------
 
   const mutation = `
@@ -901,7 +1022,8 @@ export async function approvePausedStep(
         }
 
         _set: {
-          status: "completed"
+          status:
+            "completed"
 
           approved_by:
             $approved_by
@@ -912,7 +1034,8 @@ export async function approvePausedStep(
           output:
             $output
 
-          error: null
+          error:
+            null
         }
       ) {
         id
@@ -928,8 +1051,11 @@ export async function approvePausedStep(
         }
 
         _set: {
-          status: "completed"
-          error: null
+          status:
+            "completed"
+
+          error:
+            null
         }
       ) {
         id
@@ -938,23 +1064,37 @@ export async function approvePausedStep(
     }
   `;
 
-  return graphqlRequest(
-    mutation,
-    {
-      step_id:
-        stepRunId,
+  const result =
+    await graphqlRequest(
+      mutation,
+      {
+        step_id:
+          stepRunId,
 
-      workflow_run_id:
-        stepRun.workflow_run_id,
+        workflow_run_id:
+          stepRun.workflow_run_id,
 
-      approved_by:
-        userId,
+        approved_by:
+          userId,
 
-      approved_at:
-        approvalOutput.approved_at,
+        approved_at:
+          approvalOutput.approved_at,
 
-      output:
-        approvalOutput,
-    }
-  );
+        output:
+          approvalOutput,
+      }
+    );
+
+  return {
+    ...result,
+
+    workflow_run_id:
+      stepRun.workflow_run_id,
+
+    step_run_id:
+      stepRunId,
+
+    status:
+      "completed",
+  };
 }
