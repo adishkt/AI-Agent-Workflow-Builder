@@ -5,7 +5,9 @@ import {
 import {
   getCurrentStep,
   getNextStep,
+  markStepFailed,
   failExecution,
+  createRetryStepRun,
   completeAndCreateNext,
   completeWorkflow,
 } from "./lib/workflow.js";
@@ -14,10 +16,21 @@ import {
   executeLLMStep,
 } from "./lib/llm.js";
 
+import {
+  shouldRetry,
+  getNextAttempt,
+  getMaxAttempts,
+  getRetryInput,
+} from "./lib/retry.js";
+
 export default async (
   req,
   res
 ) => {
+  // ==========================================================
+  // FUNCTION TIME
+  // ==========================================================
+
   const startTime =
     Date.now();
 
@@ -30,9 +43,9 @@ export default async (
       (Date.now() - startTime);
 
   try {
-    // ==========================================================
-    // 1. READ EVENT
-    // ==========================================================
+    // ========================================================
+    // 1. READ HASURA EVENT
+    // ========================================================
 
     const stepRun =
       req.body?.event?.data?.new;
@@ -57,6 +70,11 @@ export default async (
     const stepInput =
       stepRun.input || {};
 
+    const currentAttempt =
+      Number(
+        stepRun.attempt_count || 0
+      );
+
     if (
       !stepRunId ||
       !workflowRunId ||
@@ -70,16 +88,24 @@ export default async (
     }
 
     console.log(
-      `Starting step ${workflowStepId}`
+      "========================================"
+    );
+
+    console.log(
+      `Executing step: ${workflowStepId}`
     );
 
     console.log(
       `Workflow run: ${workflowRunId}`
     );
 
-    // ==========================================================
-    // 2. ENVIRONMENT
-    // ==========================================================
+    console.log(
+      `Attempt count: ${currentAttempt}`
+    );
+
+    // ========================================================
+    // 2. CHECK ENVIRONMENT
+    // ========================================================
 
     if (
       !process.env.NHOST_GRAPHQL_URL
@@ -105,18 +131,18 @@ export default async (
       );
     }
 
-    // ==========================================================
+    // ========================================================
     // 3. GRAPHQL CLIENT
-    // ==========================================================
+    // ========================================================
 
     const graphqlRequest =
       createGraphQLClient({
         getRemainingTime,
       });
 
-    // ==========================================================
-    // 4. GET CURRENT STEP
-    // ==========================================================
+    // ========================================================
+    // 4. GET CURRENT WORKFLOW STEP
+    // ========================================================
 
     const step =
       await getCurrentStep(
@@ -129,16 +155,20 @@ export default async (
     );
 
     console.log(
-      `Current step: ${step.name}`
+      `Step name: ${step.name}`
     );
 
     console.log(
-      `Current order: ${step.step_order}`
+      `Step type: ${step.type}`
     );
 
-    // ==========================================================
+    console.log(
+      `Step order: ${step.step_order}`
+    );
+
+    // ========================================================
     // 5. GET NEXT STEP
-    // ==========================================================
+    // ========================================================
 
     const nextStep =
       await getNextStep(
@@ -153,15 +183,19 @@ export default async (
       console.log(
         `Next step: ${nextStep.name}`
       );
+
+      console.log(
+        `Next step order: ${nextStep.step_order}`
+      );
     } else {
       console.log(
         "This is the final workflow step"
       );
     }
 
-    // ==========================================================
-    // 6. EXECUTE STEP
-    // ==========================================================
+    // ========================================================
+    // 6. EXECUTE CURRENT STEP
+    // ========================================================
 
     let stepOutput;
 
@@ -172,7 +206,9 @@ export default async (
         stepOutput =
           await executeLLMStep(
             step,
+
             stepInput,
+
             {
               getRemainingTime,
             }
@@ -183,18 +219,196 @@ export default async (
         );
       }
     } catch (stepError) {
-      // ========================================================
-      // STEP FAILURE
-      // ========================================================
+      // ======================================================
+      // STEP FAILED
+      // ======================================================
 
       console.error(
-        `Step failed: ${step.name}`,
+        `Step failed: ${step.name}`
+      );
+
+      console.error(
+        "Error:",
         stepError
       );
 
       const errorMessage =
         stepError?.message ||
         "Unknown step error";
+
+      const maxAttempts =
+        getMaxAttempts();
+
+      // ======================================================
+      // RETRY AVAILABLE
+      // ======================================================
+
+      if (
+        shouldRetry(
+          currentAttempt
+        )
+      ) {
+        const nextAttempt =
+          getNextAttempt(
+            currentAttempt
+          );
+
+        console.log(
+          `Retry available: ${nextAttempt + 1}/${maxAttempts}`
+        );
+
+        try {
+          // ----------------------------------------------
+          // Mark ONLY this step as failed.
+          //
+          // IMPORTANT:
+          // The workflow remains running because
+          // another retry will be created.
+          // ----------------------------------------------
+
+          await markStepFailed(
+            graphqlRequest,
+
+            stepRunId,
+
+            errorMessage,
+
+            currentAttempt
+          );
+
+          // ----------------------------------------------
+          // Preserve the original input.
+          //
+          // This means previous_output is not lost.
+          // ----------------------------------------------
+
+          const retryInput =
+            getRetryInput(
+              stepInput
+            );
+
+          // ----------------------------------------------
+          // Create NEW step_run.
+          //
+          // Hasura INSERT trigger will execute it.
+          // ----------------------------------------------
+
+          const retryStepRun =
+            await createRetryStepRun(
+              graphqlRequest,
+              {
+                workflowRunId,
+
+                workflowStepId,
+
+                attemptCount:
+                  nextAttempt,
+
+                input:
+                  retryInput,
+              }
+            );
+
+          console.log(
+            "Retry step_run created:"
+          );
+
+          console.log(
+            JSON.stringify(
+              retryStepRun
+            )
+          );
+
+          return res.status(200).json({
+            success: true,
+
+            message:
+              "Step failed and retry was created",
+
+            status:
+              "retrying",
+
+            workflow_run_id:
+              workflowRunId,
+
+            failed_step_run_id:
+              stepRunId,
+
+            retry_step_run_id:
+              retryStepRun?.id,
+
+            attempt:
+              nextAttempt + 1,
+
+            max_attempts:
+              maxAttempts,
+
+            error:
+              errorMessage,
+          });
+        } catch (retryError) {
+          // ==============================================
+          // RETRY CREATION FAILED
+          // ==============================================
+
+          console.error(
+            "Could not create retry:",
+            retryError
+          );
+
+          // If we cannot create the retry,
+          // the workflow should be failed because
+          // execution cannot continue safely.
+
+          try {
+            await failExecution(
+              graphqlRequest,
+
+              stepRunId,
+
+              workflowRunId,
+
+              retryError?.message ||
+                errorMessage,
+
+              currentAttempt
+            );
+          } catch (dbError) {
+            console.error(
+              "Could not mark workflow failed:",
+              dbError
+            );
+          }
+
+          return res.status(200).json({
+            success: false,
+
+            message:
+              "Step failed and retry could not be created",
+
+            error:
+              retryError?.message ||
+              errorMessage,
+
+            workflow_run_id:
+              workflowRunId,
+
+            step_run_id:
+              stepRunId,
+
+            status:
+              "failed",
+          });
+        }
+      }
+
+      // ======================================================
+      // NO RETRIES LEFT
+      // ======================================================
+
+      console.error(
+        `No retries remaining for ${step.name}`
+      );
 
       try {
         await failExecution(
@@ -204,22 +418,22 @@ export default async (
 
           workflowRunId,
 
-          errorMessage
+          errorMessage,
+
+          currentAttempt
         );
       } catch (dbError) {
         console.error(
-          "Could not update failed execution:",
+          "Could not update final failure:",
           dbError
         );
       }
 
-      // Return 200 so Hasura doesn't
-      // endlessly retry this event.
       return res.status(200).json({
         success: false,
 
         message:
-          `Step execution failed: ${step.name}`,
+          `Step execution failed after ${maxAttempts} attempts`,
 
         error:
           errorMessage,
@@ -229,14 +443,42 @@ export default async (
 
         step_run_id:
           stepRunId,
+
+        attempts:
+          currentAttempt + 1,
+
+        max_attempts:
+          maxAttempts,
+
+        status:
+          "failed",
       });
     }
 
-    // ==========================================================
-    // 7. NEXT STEP
-    // ==========================================================
+    // ========================================================
+    // 7. CURRENT STEP COMPLETED
+    // ========================================================
 
     if (nextStep) {
+      // ======================================================
+      // CREATE NEXT STEP
+      // ======================================================
+
+      const nextStepInput = {
+        previous_output:
+          stepOutput,
+      };
+
+      console.log(
+        "Creating next step with input:"
+      );
+
+      console.log(
+        JSON.stringify(
+          nextStepInput
+        )
+      );
+
       await completeAndCreateNext(
         graphqlRequest,
         {
@@ -289,9 +531,9 @@ export default async (
       });
     }
 
-    // ==========================================================
+    // ========================================================
     // 8. FINAL STEP
-    // ==========================================================
+    // ========================================================
 
     await completeWorkflow(
       graphqlRequest,
@@ -311,6 +553,10 @@ export default async (
 
     console.log(
       `Workflow completed: ${workflowRunId}`
+    );
+
+    console.log(
+      "========================================"
     );
 
     return res.status(200).json({
@@ -335,9 +581,9 @@ export default async (
         "completed",
     });
   } catch (error) {
-    // ==========================================================
-    // GLOBAL ERROR
-    // ==========================================================
+    // ========================================================
+    // GLOBAL FUNCTION ERROR
+    // ========================================================
 
     console.error(
       "Function error:",

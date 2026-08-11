@@ -104,20 +104,81 @@ export async function getNextStep(
 }
 
 // ============================================================
-// FAIL STEP + WORKFLOW
+// MARK STEP AS FAILED
+//
+// IMPORTANT:
+// This only marks the STEP failed.
+// It does NOT mark the workflow failed.
+//
+// This is used for temporary failures before retry.
+// ============================================================
+
+export async function markStepFailed(
+  graphqlRequest,
+  stepRunId,
+  errorMessage,
+  attemptCount
+) {
+  const mutation = `
+    mutation MarkStepFailed(
+      $step_id: uuid!
+      $error: String!
+      $attempt_count: Int!
+    ) {
+      update_step_runs_by_pk(
+        pk_columns: {
+          id: $step_id
+        }
+
+        _set: {
+          status: "failed"
+          error: $error
+          attempt_count: $attempt_count
+        }
+      ) {
+        id
+        status
+        error
+        attempt_count
+      }
+    }
+  `;
+
+  return graphqlRequest(
+    mutation,
+    {
+      step_id:
+        stepRunId,
+
+      error:
+        errorMessage,
+
+      attempt_count:
+        attemptCount,
+    }
+  );
+}
+
+// ============================================================
+// PERMANENT FAILURE
+//
+// Used only after all retries are exhausted.
+// Marks BOTH step and workflow as failed.
 // ============================================================
 
 export async function failExecution(
   graphqlRequest,
   stepRunId,
   workflowRunId,
-  errorMessage
+  errorMessage,
+  attemptCount
 ) {
   const mutation = `
     mutation FailExecution(
       $step_id: uuid!
       $workflow_run_id: uuid!
       $error: String!
+      $attempt_count: Int!
     ) {
 
       update_step_runs_by_pk(
@@ -128,11 +189,13 @@ export async function failExecution(
         _set: {
           status: "failed"
           error: $error
+          attempt_count: $attempt_count
         }
       ) {
         id
         status
         error
+        attempt_count
       }
 
       update_workflow_runs_by_pk(
@@ -152,7 +215,7 @@ export async function failExecution(
     }
   `;
 
-  await graphqlRequest(
+  return graphqlRequest(
     mutation,
     {
       step_id:
@@ -163,12 +226,84 @@ export async function failExecution(
 
       error:
         errorMessage,
+
+      attempt_count:
+        attemptCount,
     }
   );
 }
 
 // ============================================================
-// COMPLETE STEP + CREATE NEXT STEP
+// CREATE RETRY STEP RUN
+//
+// INSERT is intentional because Hasura is listening
+// for INSERT on step_runs.
+// ============================================================
+
+export async function createRetryStepRun(
+  graphqlRequest,
+  {
+    workflowRunId,
+    workflowStepId,
+    attemptCount,
+    input,
+  }
+) {
+  const mutation = `
+    mutation CreateRetryStepRun(
+      $workflow_run_id: uuid!
+      $workflow_step_id: uuid!
+      $attempt_count: Int!
+      $input: jsonb
+    ) {
+
+      insert_step_runs_one(
+        object: {
+          workflow_run_id:
+            $workflow_run_id
+
+          workflow_step_id:
+            $workflow_step_id
+
+          status: "pending"
+
+          attempt_count:
+            $attempt_count
+
+          input:
+            $input
+        }
+      ) {
+        id
+        status
+        attempt_count
+        input
+      }
+    }
+  `;
+
+  const data =
+    await graphqlRequest(
+      mutation,
+      {
+        workflow_run_id:
+          workflowRunId,
+
+        workflow_step_id:
+          workflowStepId,
+
+        attempt_count:
+          attemptCount,
+
+        input,
+      }
+    );
+
+  return data.insert_step_runs_one;
+}
+
+// ============================================================
+// COMPLETE CURRENT STEP + CREATE NEXT STEP
 // ============================================================
 
 export async function completeAndCreateNext(
@@ -215,7 +350,8 @@ export async function completeAndCreateNext(
 
           status: "pending"
 
-          input: $input
+          input:
+            $input
         }
       ) {
         id
