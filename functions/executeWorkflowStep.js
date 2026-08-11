@@ -37,10 +37,7 @@ import {
   getRetryInput,
 } from "./lib/retry.js";
 
-export default async (
-  req,
-  res
-) => {
+export default async (req, res) => {
   // ==========================================================
   // FUNCTION TIME
   // ==========================================================
@@ -108,6 +105,10 @@ export default async (
 
     console.log(
       `Workflow run: ${workflowRunId}`
+    );
+
+    console.log(
+      `Step run: ${stepRunId}`
     );
 
     console.log(
@@ -191,9 +192,7 @@ export default async (
         graphqlRequest,
         {
           stepRunId,
-
           workflowRunId,
-
           message,
         }
       );
@@ -251,9 +250,7 @@ export default async (
         stepOutput =
           await executeLLMStep(
             step,
-
             stepInput,
-
             {
               getRemainingTime,
             }
@@ -271,9 +268,7 @@ export default async (
         stepOutput =
           await executeHttpStep(
             step,
-
             stepInput,
-
             {
               getRemainingTime,
             }
@@ -291,9 +286,7 @@ export default async (
         stepOutput =
           await executeDbWriteStep(
             graphqlRequest,
-
             stepRunId,
-
             stepInput
           );
       }
@@ -309,9 +302,45 @@ export default async (
         stepOutput =
           executeConditionalStep(
             step,
-
             stepInput
           );
+
+        console.log(
+          "========================================"
+        );
+
+        console.log(
+          "CONDITIONAL BRANCH"
+        );
+
+        console.log(
+          "Actual:",
+          stepOutput.actual
+        );
+
+        console.log(
+          "Expected:",
+          stepOutput.expected
+        );
+
+        console.log(
+          "Operator:",
+          stepOutput.operator
+        );
+
+        console.log(
+          "Result:",
+          stepOutput.result
+        );
+
+        console.log(
+          "Selected step:",
+          stepOutput.selected_step_id
+        );
+
+        console.log(
+          "========================================"
+        );
       }
 
       // ======================================================
@@ -370,11 +399,8 @@ export default async (
 
           await markStepFailed(
             graphqlRequest,
-
             stepRunId,
-
             errorMessage,
-
             currentAttempt
           );
 
@@ -446,10 +472,6 @@ export default async (
           });
 
         } catch (retryError) {
-          // ==================================================
-          // RETRY CREATION FAILED
-          // ==================================================
-
           console.error(
             "Could not create retry:",
             retryError
@@ -551,20 +573,11 @@ export default async (
     }
 
     // ========================================================
-    // 7. DETERMINE NEXT STEP
-    // ========================================================
-
-    let nextStep =
-      await getNextStep(
-        graphqlRequest,
-
-        step.workflow_id,
-
-        step.step_order
-      );
-
-    // ========================================================
-    // CONDITIONAL BRANCH
+    // 7. CONDITIONAL BRANCH
+    //
+    // IMPORTANT:
+    // A conditional step MUST NOT use step_order.
+    // It must ONLY use the selected branch.
     // ========================================================
 
     if (
@@ -572,9 +585,7 @@ export default async (
       "conditional_branch"
     ) {
       const selectedStepId =
-        stepOutput.result
-          ? stepOutput.true_step_id
-          : stepOutput.false_step_id;
+        stepOutput.selected_step_id;
 
       console.log(
         "Conditional result:",
@@ -582,7 +593,17 @@ export default async (
       );
 
       console.log(
-        "Selected step:",
+        "TRUE step:",
+        stepOutput.true_step_id
+      );
+
+      console.log(
+        "FALSE step:",
+        stepOutput.false_step_id
+      );
+
+      console.log(
+        "SELECTED step:",
         selectedStepId
       );
 
@@ -592,16 +613,26 @@ export default async (
         );
       }
 
-      nextStep =
+      // ------------------------------------------------------
+      // Load ONLY the selected branch.
+      // ------------------------------------------------------
+
+      const nextStep =
         await getStepById(
           graphqlRequest,
-
           selectedStepId
         );
 
+      if (!nextStep) {
+        throw new Error(
+          `Selected conditional step ${selectedStepId} could not be found`
+        );
+      }
+
       // ------------------------------------------------------
       // Security:
-      // Conditional branches cannot jump across workflows.
+      // Conditional branches cannot jump
+      // across workflows.
       // ------------------------------------------------------
 
       if (
@@ -612,26 +643,99 @@ export default async (
           "Conditional branch cannot jump to a step in another workflow"
         );
       }
-    }
-
-    // ========================================================
-    // 8. CREATE NEXT STEP
-    // ========================================================
-
-    if (nextStep) {
-      const nextStepInput = {
-        previous_output:
-          stepOutput,
-      };
 
       console.log(
-        "Creating next step with input:"
+        `Conditional branch selected: ${nextStep.name}`
+      );
+
+      // ------------------------------------------------------
+      // Create ONLY the selected branch.
+      //
+      // DO NOT call getNextStep().
+      // DO NOT execute the other branch.
+      // ------------------------------------------------------
+
+      await completeAndCreateNext(
+        graphqlRequest,
+        {
+          stepRunId,
+
+          workflowRunId,
+
+          nextStepId:
+            nextStep.id,
+
+          output:
+            stepOutput,
+        }
       );
 
       console.log(
-        JSON.stringify(
-          nextStepInput
-        )
+        `Completed conditional step: ${step.name}`
+      );
+
+      console.log(
+        `Selected branch created: ${nextStep.name}`
+      );
+
+      return res.status(200).json({
+        success: true,
+
+        message:
+          "Conditional step completed and selected branch created",
+
+        workflow_run_id:
+          workflowRunId,
+
+        step_run_id:
+          stepRunId,
+
+        completed_step:
+          step.name,
+
+        condition_result:
+          stepOutput.result,
+
+        selected_step:
+          nextStep.name,
+
+        selected_step_id:
+          nextStep.id,
+
+        output:
+          stepOutput,
+
+        status:
+          "running",
+      });
+    }
+
+    // ========================================================
+    // 8. NORMAL STEP → NEXT STEP
+    //
+    // This section is ONLY for non-conditional steps.
+    // ========================================================
+
+    const nextStep =
+      await getNextStep(
+        graphqlRequest,
+
+        step.workflow_id,
+
+        step.step_order
+      );
+
+    if (nextStep) {
+      console.log(
+        "Normal workflow progression"
+      );
+
+      console.log(
+        `Current step: ${step.name}`
+      );
+
+      console.log(
+        `Next step: ${nextStep.name}`
       );
 
       await completeAndCreateNext(
@@ -700,9 +804,6 @@ export default async (
         output:
           stepOutput,
 
-        // NEW:
-        // Used to increment organization quota
-        // when the workflow successfully completes.
         organizationId:
           step.workflow?.organization?.id,
       }
