@@ -645,10 +645,10 @@ export async function approvePausedStep(
 
   if (
     step.type !==
-    "approval"
+    "approval_gate"
   ) {
     throw new Error(
-      "This step is not an approval step"
+      "This step is not an approval gate"
     );
   }
 
