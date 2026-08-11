@@ -27,8 +27,7 @@ export async function getCurrentStep(
     await graphqlRequest(
       query,
       {
-        step_id:
-          workflowStepId,
+        step_id: workflowStepId,
       }
     );
 
@@ -44,61 +43,8 @@ export async function getCurrentStep(
   return step;
 }
 
-
-// ============================================================
-// GET STEP BY ID
-//
-// Used by conditional_branch to select the true/false step.
-// ============================================================
-
-export async function getStepById(
-  graphqlRequest,
-  stepId
-) {
-  const query = `
-    query GetStepById(
-      $step_id: uuid!
-    ) {
-      workflow_steps_by_pk(
-        id: $step_id
-      ) {
-        id
-        workflow_id
-        step_order
-        name
-        type
-        config
-      }
-    }
-  `;
-
-  const data =
-    await graphqlRequest(
-      query,
-      {
-        step_id:
-          stepId,
-      }
-    );
-
-  const step =
-    data.workflow_steps_by_pk;
-
-  if (!step) {
-    throw new Error(
-      "Selected conditional branch step not found"
-    );
-  }
-
-  return step;
-}
-
-
 // ============================================================
 // GET NEXT STEP
-//
-// Normal sequential execution uses step_order.
-// Conditional branches can override this using getStepById().
 // ============================================================
 
 export async function getNextStep(
@@ -142,11 +88,8 @@ export async function getNextStep(
     await graphqlRequest(
       query,
       {
-        workflow_id:
-          workflowId,
-
-        step_order:
-          stepOrder,
+        workflow_id: workflowId,
+        step_order: stepOrder,
       }
     );
 
@@ -156,12 +99,53 @@ export async function getNextStep(
   );
 }
 
+// ============================================================
+// GET STEP BY ID
+// ============================================================
+
+export async function getStepById(
+  graphqlRequest,
+  stepId
+) {
+  const query = `
+    query GetStepById(
+      $step_id: uuid!
+    ) {
+      workflow_steps_by_pk(
+        id: $step_id
+      ) {
+        id
+        workflow_id
+        step_order
+        name
+        type
+        config
+      }
+    }
+  `;
+
+  const data =
+    await graphqlRequest(
+      query,
+      {
+        step_id: stepId,
+      }
+    );
+
+  const step =
+    data.workflow_steps_by_pk;
+
+  if (!step) {
+    throw new Error(
+      "Selected conditional branch step not found"
+    );
+  }
+
+  return step;
+}
 
 // ============================================================
 // MARK STEP AS FAILED
-//
-// This only marks the current step as failed.
-// The workflow remains running when a retry will be created.
 // ============================================================
 
 export async function markStepFailed(
@@ -198,24 +182,15 @@ export async function markStepFailed(
   return graphqlRequest(
     mutation,
     {
-      step_id:
-        stepRunId,
-
-      error:
-        errorMessage,
-
-      attempt_count:
-        attemptCount,
+      step_id: stepRunId,
+      error: errorMessage,
+      attempt_count: attemptCount,
     }
   );
 }
 
-
 // ============================================================
 // PERMANENT FAILURE
-//
-// Used after all retries are exhausted.
-// Marks BOTH step and workflow as failed.
 // ============================================================
 
 export async function failExecution(
@@ -270,27 +245,16 @@ export async function failExecution(
   return graphqlRequest(
     mutation,
     {
-      step_id:
-        stepRunId,
-
-      workflow_run_id:
-        workflowRunId,
-
-      error:
-        errorMessage,
-
-      attempt_count:
-        attemptCount,
+      step_id: stepRunId,
+      workflow_run_id: workflowRunId,
+      error: errorMessage,
+      attempt_count: attemptCount,
     }
   );
 }
 
-
 // ============================================================
 // CREATE RETRY STEP RUN
-//
-// INSERT is intentional because Hasura listens for INSERT
-// events on step_runs.
 // ============================================================
 
 export async function createRetryStepRun(
@@ -355,7 +319,6 @@ export async function createRetryStepRun(
   return data.insert_step_runs_one;
 }
 
-
 // ============================================================
 // COMPLETE CURRENT STEP + CREATE NEXT STEP
 // ============================================================
@@ -418,8 +381,7 @@ export async function completeAndCreateNext(
   return graphqlRequest(
     mutation,
     {
-      step_id:
-        stepRunId,
+      step_id: stepRunId,
 
       workflow_run_id:
         workflowRunId,
@@ -436,7 +398,6 @@ export async function completeAndCreateNext(
     }
   );
 }
-
 
 // ============================================================
 // COMPLETE FINAL WORKFLOW
@@ -492,8 +453,7 @@ export async function completeWorkflow(
   return graphqlRequest(
     mutation,
     {
-      step_id:
-        stepRunId,
+      step_id: stepRunId,
 
       workflow_run_id:
         workflowRunId,
@@ -504,7 +464,7 @@ export async function completeWorkflow(
 }
 
 // ============================================================
-// PAUSE WORKFLOW AT APPROVAL GATE
+// PAUSE WORKFLOW AT APPROVAL STEP
 // ============================================================
 
 export async function pauseApprovalGate(
@@ -557,7 +517,8 @@ export async function pauseApprovalGate(
   return graphqlRequest(
     mutation,
     {
-      step_id: stepRunId,
+      step_id:
+        stepRunId,
 
       workflow_run_id:
         workflowRunId,
@@ -574,9 +535,17 @@ export async function pauseApprovalGate(
   );
 }
 
-
 // ============================================================
 // APPROVE PAUSED STEP
+//
+// Security:
+// 1. Step must exist.
+// 2. Step must be paused.
+// 3. Step must actually be an approval step.
+// 4. Workflow must exist.
+// 5. Approver must belong to the same organization.
+// 6. Approver must be owner/editor.
+// 7. Approval resumes the workflow.
 // ============================================================
 
 export async function approvePausedStep(
@@ -671,12 +640,15 @@ export async function approvePausedStep(
     );
   }
 
+  // IMPORTANT:
+  // Database uses "approval", not "approval_gate".
+
   if (
     step.type !==
-    "approval_gate"
+    "approval"
   ) {
     throw new Error(
-      "This step is not an approval gate"
+      "This step is not an approval step"
     );
   }
 
@@ -790,7 +762,7 @@ export async function approvePausedStep(
     );
 
   // ----------------------------------------------------------
-  // 6. Mark approval gate completed
+  // 6. Approval output
   // ----------------------------------------------------------
 
   const approvalOutput = {
@@ -802,6 +774,10 @@ export async function approvePausedStep(
     approved_at:
       new Date().toISOString(),
   };
+
+  // ----------------------------------------------------------
+  // 7. Resume workflow with next step
+  // ----------------------------------------------------------
 
   if (nextStep) {
     const mutation = `
@@ -822,9 +798,16 @@ export async function approvePausedStep(
 
           _set: {
             status: "completed"
-            approved_by: $approved_by
-            approved_at: $approved_at
-            output: $output
+
+            approved_by:
+              $approved_by
+
+            approved_at:
+              $approved_at
+
+            output:
+              $output
+
             error: null
           }
         ) {
@@ -900,7 +883,7 @@ export async function approvePausedStep(
   }
 
   // ----------------------------------------------------------
-  // 7. Approval gate is final step
+  // 8. Approval is final workflow step
   // ----------------------------------------------------------
 
   const mutation = `
@@ -919,9 +902,16 @@ export async function approvePausedStep(
 
         _set: {
           status: "completed"
-          approved_by: $approved_by
-          approved_at: $approved_at
-          output: $output
+
+          approved_by:
+            $approved_by
+
+          approved_at:
+            $approved_at
+
+          output:
+            $output
+
           error: null
         }
       ) {

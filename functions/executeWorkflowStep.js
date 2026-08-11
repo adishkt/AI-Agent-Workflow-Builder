@@ -176,21 +176,26 @@ export default async (
     );
 
     // ========================================================
-    // 5. APPROVAL GATE
+    // 5. APPROVAL STEP
     //
-    // Approval gates are special:
+    // IMPORTANT:
+    // Your database uses:
     //
-    // - do not execute another operation
-    // - pause the step
-    // - pause the workflow
-    // - do NOT create the next step
+    //     type = "approval"
     //
-    // approveStep will resume the workflow later.
+    // NOT:
+    //
+    //     type = "approval_gate"
+    //
+    // The approval step pauses the workflow and does NOT
+    // create the next step.
+    //
+    // approveStep() will resume the workflow later.
     // ========================================================
 
     if (
       step.type ===
-      "approval_gate"
+      "approval"
     ) {
       const message =
         step.config?.message ||
@@ -208,7 +213,7 @@ export default async (
       );
 
       console.log(
-        `Workflow paused at approval gate: ${step.name}`
+        `Workflow paused at approval step: ${step.name}`
       );
 
       return res.status(200).json({
@@ -223,7 +228,7 @@ export default async (
         step_run_id:
           stepRunId,
 
-        completed_step:
+        step:
           step.name,
 
         status:
@@ -246,7 +251,8 @@ export default async (
       // ======================================================
 
       if (
-        step.type === "llm"
+        step.type ===
+        "llm"
       ) {
         if (
           !process.env.OPENROUTER_API_KEY
@@ -259,7 +265,9 @@ export default async (
         stepOutput =
           await executeLLMStep(
             step,
+
             stepInput,
+
             {
               getRemainingTime,
             }
@@ -277,7 +285,9 @@ export default async (
         stepOutput =
           await executeHttpStep(
             step,
+
             stepInput,
+
             {
               getRemainingTime,
             }
@@ -295,7 +305,9 @@ export default async (
         stepOutput =
           await executeDbWriteStep(
             graphqlRequest,
+
             stepRunId,
+
             stepInput
           );
       }
@@ -311,6 +323,7 @@ export default async (
         stepOutput =
           executeConditionalStep(
             step,
+
             stepInput
           );
       }
@@ -388,8 +401,7 @@ export default async (
             );
 
           // --------------------------------------------------
-          // Create a NEW step run
-          // Hasura INSERT event starts execution again.
+          // Create NEW step run
           // --------------------------------------------------
 
           const retryStepRun =
@@ -566,10 +578,7 @@ export default async (
     // ========================================================
     // CONDITIONAL BRANCH
     //
-    // Normal steps use step_order.
-    //
-    // Conditional branch overrides the normal next step
-    // using true_step_id / false_step_id.
+    // Conditional branch overrides normal step ordering.
     // ========================================================
 
     if (
@@ -605,8 +614,8 @@ export default async (
         );
 
       // ------------------------------------------------------
-      // Security check:
-      // conditional branch cannot jump to another workflow.
+      // Security:
+      // Conditional branches cannot jump across workflows.
       // ------------------------------------------------------
 
       if (
