@@ -5,8 +5,12 @@ export default async (req, res) => {
   // CONFIG
   // ============================================================
 
-  // Nhost Functions are time-limited.
-  // Keep enough room for GraphQL + OpenRouter + final DB update.
+  // Nhost function has roughly a 10 second execution limit.
+  // Keep enough time for:
+  // 1. GraphQL
+  // 2. OpenRouter
+  // 3. Final DB update
+  // 4. HTTP response
   const FUNCTION_TIMEOUT = 9000;
 
   const remainingTime = () => {
@@ -28,6 +32,7 @@ export default async (req, res) => {
 
     const controller = new AbortController();
 
+    // Never allow GraphQL to consume the whole function time.
     const timeoutMs = Math.min(
       1200,
       Math.max(600, remaining - 300)
@@ -45,6 +50,7 @@ export default async (req, res) => {
 
           headers: {
             "Content-Type": "application/json",
+
             "x-hasura-admin-secret":
               process.env.NHOST_ADMIN_SECRET,
           },
@@ -82,7 +88,7 @@ export default async (req, res) => {
 
       return result.data;
     } catch (error) {
-      if (error.name === "AbortError") {
+      if (error?.name === "AbortError") {
         throw new Error(
           "GraphQL request timed out"
         );
@@ -116,13 +122,16 @@ export default async (req, res) => {
     }
 
     const stepRunId = stepRun.id;
+
     const workflowRunId =
       stepRun.workflow_run_id;
+
     const workflowStepId =
       stepRun.workflow_step_id;
 
-    // This is the important value for chaining.
-    const stepInput = stepRun.input || {};
+    // This contains the previous step output.
+    const stepInput =
+      stepRun.input || {};
 
     if (
       !stepRunId ||
@@ -180,16 +189,6 @@ export default async (req, res) => {
     // ============================================================
     // 3. GET CURRENT WORKFLOW STEP
     // ============================================================
-    //
-    // IMPORTANT:
-    // We do NOT use workflowRunId as workflow_id.
-    //
-    // workflowRunId -> workflow_runs.id
-    // workflowStepId -> workflow_steps.id
-    //
-    // The current workflow_step contains the real workflow_id
-    // and step_order.
-    // ============================================================
 
     const currentStepQuery = `
       query GetCurrentStep(
@@ -225,7 +224,8 @@ export default async (req, res) => {
       );
     }
 
-    const workflowId = step.workflow_id;
+    const workflowId =
+      step.workflow_id;
 
     const currentStepOrder =
       step.step_order;
@@ -252,6 +252,7 @@ export default async (req, res) => {
             workflow_id: {
               _eq: $workflow_id
             }
+
             step_order: {
               _gt: $step_order
             }
@@ -312,13 +313,18 @@ export default async (req, res) => {
       // ==========================================================
 
       if (step.type === "llm") {
-        const config = step.config || {};
+        const config =
+          step.config || {};
 
         const basePrompt =
           config.prompt ??
           config.message ??
           step.name ??
           "Complete this task.";
+
+        // --------------------------------------------------------
+        // PREVIOUS STEP OUTPUT
+        // --------------------------------------------------------
 
         const previousOutput =
           stepInput.previous_output;
@@ -350,9 +356,15 @@ ${JSON.stringify(previousOutput)}
           prompt
         );
 
+        // --------------------------------------------------------
+        // MODEL
+        // --------------------------------------------------------
+
+        // Use a known working model by default.
+        // You can override it from step.config.model.
         const model =
           config.model ||
-          "openrouter/free";
+          "openai/gpt-4o-mini";
 
         console.log(
           `Calling OpenRouter using ${model}`
@@ -365,7 +377,9 @@ ${JSON.stringify(previousOutput)}
         const remaining =
           remainingTime();
 
-        if (remaining < 1800) {
+        // We need enough time for:
+        // OpenRouter + final GraphQL mutation.
+        if (remaining < 4000) {
           throw new Error(
             "Not enough time remaining to call OpenRouter"
           );
@@ -374,71 +388,85 @@ ${JSON.stringify(previousOutput)}
         const controller =
           new AbortController();
 
+        // IMPORTANT:
+        // Nhost kills the function around 10 seconds.
+        // Do NOT let OpenRouter run for 4+ seconds.
         const timeoutMs = Math.min(
-          4000,
+          3000,
           Math.max(
             1500,
-            remaining - 800
+            remaining - 1200
           )
         );
 
-        const timeout = setTimeout(
-          () => controller.abort(),
-          timeoutMs
+        console.log(
+          `OpenRouter timeout: ${timeoutMs}ms`
         );
+
+        const timeout =
+          setTimeout(() => {
+            controller.abort();
+          }, timeoutMs);
 
         let llmResponse;
 
         try {
-          llmResponse = await fetch(
-            "https://openrouter.ai/api/v1/chat/completions",
-            {
-              method: "POST",
+          llmResponse =
+            await fetch(
+              "https://openrouter.ai/api/v1/chat/completions",
+              {
+                method: "POST",
 
-              headers: {
-                "Content-Type":
-                  "application/json",
+                headers: {
+                  "Content-Type":
+                    "application/json",
 
-                Authorization:
-                  `Bearer ${process.env.OPENROUTER_API_KEY}`,
+                  Authorization:
+                    `Bearer ${process.env.OPENROUTER_API_KEY}`,
 
-                "HTTP-Referer":
-                  "https://app.nhost.io",
+                  "HTTP-Referer":
+                    "https://app.nhost.io",
 
-                "X-Title":
-                  "AI Agent Workflow Builder",
-              },
+                  "X-Title":
+                    "AI Agent Workflow Builder",
+                },
 
-              body: JSON.stringify({
-                model,
+                body: JSON.stringify({
+                  model,
 
-                messages: [
-                  {
-                    role: "user",
-                    content: prompt,
-                  },
-                ],
+                  messages: [
+                    {
+                      role: "user",
+                      content: prompt,
+                    },
+                  ],
 
-                max_tokens:
-                  config.max_tokens ||
-                  200,
-              }),
+                  // Keep responses small so
+                  // free models respond quickly.
+                  max_tokens:
+                    config.max_tokens ||
+                    150,
+                }),
 
-              signal: controller.signal,
-            }
-          );
+                signal:
+                  controller.signal,
+              }
+            );
         } catch (error) {
           if (
-            error.name ===
+            error?.name ===
             "AbortError"
           ) {
             throw new Error(
-              "OpenRouter request timed out"
+              "OpenRouter request timed out after 3 seconds"
             );
           }
 
           throw new Error(
-            `Could not connect to OpenRouter: ${error.message}`
+            `Could not connect to OpenRouter: ${
+              error?.message ||
+              "Unknown error"
+            }`
           );
         } finally {
           clearTimeout(timeout);
@@ -450,6 +478,11 @@ ${JSON.stringify(previousOutput)}
 
         const responseText =
           await llmResponse.text();
+
+        console.log(
+          "OpenRouter HTTP status:",
+          llmResponse.status
+        );
 
         let llmResult;
 
@@ -491,6 +524,10 @@ ${JSON.stringify(previousOutput)}
           );
         }
 
+        // ========================================================
+        // STEP OUTPUT
+        // ========================================================
+
         stepOutput = {
           text: aiText,
 
@@ -510,7 +547,7 @@ ${JSON.stringify(previousOutput)}
       }
 
       // ==========================================================
-      // UNSUPPORTED STEP
+      // UNSUPPORTED STEP TYPE
       // ==========================================================
 
       else {
@@ -519,9 +556,9 @@ ${JSON.stringify(previousOutput)}
         );
       }
     } catch (stepError) {
-      // ============================================================
+      // ==========================================================
       // STEP FAILED
-      // ============================================================
+      // ==========================================================
 
       console.error(
         `Step failed: ${step.name}`,
@@ -536,7 +573,7 @@ ${JSON.stringify(previousOutput)}
         const failMutation = `
           mutation FailExecution(
             $step_id: uuid!
-            $workflow_id: uuid!
+            $workflow_run_id: uuid!
             $error: String!
           ) {
 
@@ -557,7 +594,7 @@ ${JSON.stringify(previousOutput)}
 
             update_workflow_runs_by_pk(
               pk_columns: {
-                id: $workflow_id
+                id: $workflow_run_id
               }
 
               _set: {
@@ -575,9 +612,14 @@ ${JSON.stringify(previousOutput)}
         await graphqlRequest(
           failMutation,
           {
-            step_id: stepRunId,
-            workflow_id: workflowRunId,
-            error: errorMessage,
+            step_id:
+              stepRunId,
+
+            workflow_run_id:
+              workflowRunId,
+
+            error:
+              errorMessage,
           }
         );
       } catch (dbError) {
@@ -595,7 +637,8 @@ ${JSON.stringify(previousOutput)}
         message:
           `Step execution failed: ${step.name}`,
 
-        error: errorMessage,
+        error:
+          errorMessage,
 
         workflow_run_id:
           workflowRunId,
@@ -621,7 +664,7 @@ ${JSON.stringify(previousOutput)}
       const nextStepMutation = `
         mutation CompleteAndCreateNext(
           $step_id: uuid!
-          $next_workflow_run_id: uuid!
+          $workflow_run_id: uuid!
           $next_workflow_step_id: uuid!
           $output: jsonb
           $input: jsonb
@@ -646,7 +689,7 @@ ${JSON.stringify(previousOutput)}
           insert_step_runs_one(
             object: {
               workflow_run_id:
-                $next_workflow_run_id
+                $workflow_run_id
 
               workflow_step_id:
                 $next_workflow_step_id
@@ -663,8 +706,13 @@ ${JSON.stringify(previousOutput)}
         }
       `;
 
+      // ==========================================================
+      // PASS CURRENT OUTPUT TO NEXT STEP
+      // ==========================================================
+
       const nextInput = {
-        previous_output: stepOutput,
+        previous_output:
+          stepOutput,
       };
 
       console.log(
@@ -675,9 +723,10 @@ ${JSON.stringify(previousOutput)}
       await graphqlRequest(
         nextStepMutation,
         {
-          step_id: stepRunId,
+          step_id:
+            stepRunId,
 
-          next_workflow_run_id:
+          workflow_run_id:
             workflowRunId,
 
           next_workflow_step_id:
@@ -774,7 +823,8 @@ ${JSON.stringify(previousOutput)}
     await graphqlRequest(
       completeWorkflowMutation,
       {
-        step_id: stepRunId,
+        step_id:
+          stepRunId,
 
         workflow_run_id:
           workflowRunId,
