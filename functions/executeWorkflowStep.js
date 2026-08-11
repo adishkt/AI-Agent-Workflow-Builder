@@ -176,26 +176,25 @@ export default async (
     );
 
     // ========================================================
-    // 5. APPROVAL STEP
+    // 5. APPROVAL GATE
     //
-    // IMPORTANT:
-    // Your database uses:
+    // Database type:
     //
-    //     type = "approval"
+    //     approval_gate
     //
-    // NOT:
+    // Approval gates:
     //
-    //     type = "approval_gate"
+    // - do not execute an LLM/HTTP/etc.
+    // - pause the step
+    // - pause the workflow
+    // - do NOT create the next step
     //
-    // The approval step pauses the workflow and does NOT
-    // create the next step.
-    //
-    // approveStep() will resume the workflow later.
+    // approveStep() resumes the workflow later.
     // ========================================================
 
     if (
       step.type ===
-      "approval"
+      "approval_gate"
     ) {
       const message =
         step.config?.message ||
@@ -213,7 +212,7 @@ export default async (
       );
 
       console.log(
-        `Workflow paused at approval step: ${step.name}`
+        `Workflow paused at approval gate: ${step.name}`
       );
 
       return res.status(200).json({
