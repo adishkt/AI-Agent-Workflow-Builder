@@ -593,11 +593,11 @@ export async function approvePausedStep(
   }
 
   if (
-    stepRun.status !==
-    "paused"
+    step.type !==
+    "approval_gate"
   ) {
     throw new Error(
-      "This step is not waiting for approval"
+      "This step is not an approval gate"
     );
   }
 
