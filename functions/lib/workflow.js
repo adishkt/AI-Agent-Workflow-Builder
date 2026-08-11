@@ -502,3 +502,469 @@ export async function completeWorkflow(
     }
   );
 }
+
+// ============================================================
+// PAUSE WORKFLOW AT APPROVAL GATE
+// ============================================================
+
+export async function pauseApprovalGate(
+  graphqlRequest,
+  {
+    stepRunId,
+    workflowRunId,
+    message,
+  }
+) {
+  const mutation = `
+    mutation PauseApprovalGate(
+      $step_id: uuid!
+      $workflow_run_id: uuid!
+      $output: jsonb
+    ) {
+
+      update_step_runs_by_pk(
+        pk_columns: {
+          id: $step_id
+        }
+
+        _set: {
+          status: "paused"
+          output: $output
+          error: null
+        }
+      ) {
+        id
+        status
+        output
+      }
+
+      update_workflow_runs_by_pk(
+        pk_columns: {
+          id: $workflow_run_id
+        }
+
+        _set: {
+          status: "paused"
+          error: null
+        }
+      ) {
+        id
+        status
+      }
+    }
+  `;
+
+  return graphqlRequest(
+    mutation,
+    {
+      step_id: stepRunId,
+
+      workflow_run_id:
+        workflowRunId,
+
+      output: {
+        status:
+          "awaiting_approval",
+
+        message:
+          message ||
+          "This workflow is waiting for approval.",
+      },
+    }
+  );
+}
+
+
+// ============================================================
+// APPROVE PAUSED STEP
+// ============================================================
+
+export async function approvePausedStep(
+  graphqlRequest,
+  {
+    stepRunId,
+    userId,
+  }
+) {
+  // ----------------------------------------------------------
+  // 1. Get step run
+  // ----------------------------------------------------------
+
+  const stepRunQuery = `
+    query GetStepRun(
+      $step_id: uuid!
+    ) {
+      step_runs_by_pk(
+        id: $step_id
+      ) {
+        id
+        workflow_run_id
+        workflow_step_id
+        status
+        input
+      }
+    }
+  `;
+
+  const stepRunData =
+    await graphqlRequest(
+      stepRunQuery,
+      {
+        step_id: stepRunId,
+      }
+    );
+
+  const stepRun =
+    stepRunData.step_runs_by_pk;
+
+  if (!stepRun) {
+    throw new Error(
+      "Step run not found"
+    );
+  }
+
+  if (
+    stepRun.status !==
+    "paused"
+  ) {
+    throw new Error(
+      "This step is not waiting for approval"
+    );
+  }
+
+  // ----------------------------------------------------------
+  // 2. Get workflow step
+  // ----------------------------------------------------------
+
+  const stepQuery = `
+    query GetWorkflowStep(
+      $step_id: uuid!
+    ) {
+      workflow_steps_by_pk(
+        id: $step_id
+      ) {
+        id
+        workflow_id
+        step_order
+        name
+        type
+        config
+      }
+    }
+  `;
+
+  const stepData =
+    await graphqlRequest(
+      stepQuery,
+      {
+        step_id:
+          stepRun.workflow_step_id,
+      }
+    );
+
+  const step =
+    stepData.workflow_steps_by_pk;
+
+  if (!step) {
+    throw new Error(
+      "Workflow step not found"
+    );
+  }
+
+  if (
+    step.type !==
+    "approval_gate"
+  ) {
+    throw new Error(
+      "This step is not an approval gate"
+    );
+  }
+
+  // ----------------------------------------------------------
+  // 3. Get workflow
+  // ----------------------------------------------------------
+
+  const workflowQuery = `
+    query GetWorkflow(
+      $workflow_id: uuid!
+    ) {
+      workflows_by_pk(
+        id: $workflow_id
+      ) {
+        id
+        org_id
+        name
+      }
+    }
+  `;
+
+  const workflowData =
+    await graphqlRequest(
+      workflowQuery,
+      {
+        workflow_id:
+          step.workflow_id,
+      }
+    );
+
+  const workflow =
+    workflowData.workflows_by_pk;
+
+  if (!workflow) {
+    throw new Error(
+      "Workflow not found"
+    );
+  }
+
+  // ----------------------------------------------------------
+  // 4. Verify organization membership
+  // ----------------------------------------------------------
+
+  const membershipQuery = `
+    query GetApproverMembership(
+      $org_id: uuid!
+      $user_id: uuid!
+    ) {
+      org_members(
+        where: {
+          org_id: {
+            _eq: $org_id
+          }
+
+          user_id: {
+            _eq: $user_id
+          }
+        }
+
+        limit: 1
+      ) {
+        org_id
+        user_id
+        role
+      }
+    }
+  `;
+
+  const membershipData =
+    await graphqlRequest(
+      membershipQuery,
+      {
+        org_id:
+          workflow.org_id,
+
+        user_id:
+          userId,
+      }
+    );
+
+  const membership =
+    membershipData.org_members?.[0];
+
+  if (!membership) {
+    throw new Error(
+      "You are not a member of this organization"
+    );
+  }
+
+  // Owner/editor can approve.
+  if (
+    membership.role !== "owner" &&
+    membership.role !== "editor"
+  ) {
+    throw new Error(
+      "Only an owner or editor can approve this step"
+    );
+  }
+
+  // ----------------------------------------------------------
+  // 5. Find next step
+  // ----------------------------------------------------------
+
+  const nextStep =
+    await getNextStep(
+      graphqlRequest,
+
+      step.workflow_id,
+
+      step.step_order
+    );
+
+  // ----------------------------------------------------------
+  // 6. Mark approval gate completed
+  // ----------------------------------------------------------
+
+  const approvalOutput = {
+    approved: true,
+
+    approved_by:
+      userId,
+
+    approved_at:
+      new Date().toISOString(),
+  };
+
+  if (nextStep) {
+    const mutation = `
+      mutation ApproveAndContinue(
+        $step_id: uuid!
+        $workflow_run_id: uuid!
+        $next_step_id: uuid!
+        $approved_by: uuid!
+        $approved_at: timestamptz!
+        $output: jsonb
+        $input: jsonb
+      ) {
+
+        update_step_runs_by_pk(
+          pk_columns: {
+            id: $step_id
+          }
+
+          _set: {
+            status: "completed"
+            approved_by: $approved_by
+            approved_at: $approved_at
+            output: $output
+            error: null
+          }
+        ) {
+          id
+          status
+          approved_by
+          approved_at
+          output
+        }
+
+        update_workflow_runs_by_pk(
+          pk_columns: {
+            id: $workflow_run_id
+          }
+
+          _set: {
+            status: "running"
+            error: null
+          }
+        ) {
+          id
+          status
+        }
+
+        insert_step_runs_one(
+          object: {
+            workflow_run_id:
+              $workflow_run_id
+
+            workflow_step_id:
+              $next_step_id
+
+            status: "pending"
+
+            input:
+              $input
+          }
+        ) {
+          id
+          status
+          input
+        }
+      }
+    `;
+
+    return graphqlRequest(
+      mutation,
+      {
+        step_id:
+          stepRunId,
+
+        workflow_run_id:
+          stepRun.workflow_run_id,
+
+        next_step_id:
+          nextStep.id,
+
+        approved_by:
+          userId,
+
+        approved_at:
+          approvalOutput.approved_at,
+
+        output:
+          approvalOutput,
+
+        input: {
+          previous_output:
+            approvalOutput,
+        },
+      }
+    );
+  }
+
+  // ----------------------------------------------------------
+  // 7. Approval gate is final step
+  // ----------------------------------------------------------
+
+  const mutation = `
+    mutation ApproveFinalStep(
+      $step_id: uuid!
+      $workflow_run_id: uuid!
+      $approved_by: uuid!
+      $approved_at: timestamptz!
+      $output: jsonb
+    ) {
+
+      update_step_runs_by_pk(
+        pk_columns: {
+          id: $step_id
+        }
+
+        _set: {
+          status: "completed"
+          approved_by: $approved_by
+          approved_at: $approved_at
+          output: $output
+          error: null
+        }
+      ) {
+        id
+        status
+        approved_by
+        approved_at
+        output
+      }
+
+      update_workflow_runs_by_pk(
+        pk_columns: {
+          id: $workflow_run_id
+        }
+
+        _set: {
+          status: "completed"
+          error: null
+        }
+      ) {
+        id
+        status
+      }
+    }
+  `;
+
+  return graphqlRequest(
+    mutation,
+    {
+      step_id:
+        stepRunId,
+
+      workflow_run_id:
+        stepRun.workflow_run_id,
+
+      approved_by:
+        userId,
+
+      approved_at:
+        approvalOutput.approved_at,
+
+      output:
+        approvalOutput,
+    }
+  );
+}

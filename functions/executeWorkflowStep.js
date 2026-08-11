@@ -11,6 +11,7 @@ import {
   createRetryStepRun,
   completeAndCreateNext,
   completeWorkflow,
+  pauseApprovalGate,
 } from "./lib/workflow.js";
 
 import {
@@ -24,6 +25,10 @@ import {
 import {
   executeConditionalStep,
 } from "./lib/condition.js";
+
+import {
+  executeDbWriteStep,
+} from "./lib/db.js";
 
 import {
   shouldRetry,
@@ -129,10 +134,6 @@ export default async (
       );
     }
 
-    // OpenRouter is required for LLM steps.
-    // We don't need to reject HTTP-only steps
-    // just because the LLM key is missing.
-
     // ========================================================
     // 3. GRAPHQL CLIENT
     // ========================================================
@@ -175,7 +176,66 @@ export default async (
     );
 
     // ========================================================
-    // 5. EXECUTE CURRENT STEP
+    // 5. APPROVAL GATE
+    //
+    // Approval gates are special:
+    //
+    // - do not execute another operation
+    // - pause the step
+    // - pause the workflow
+    // - do NOT create the next step
+    //
+    // approveStep will resume the workflow later.
+    // ========================================================
+
+    if (
+      step.type ===
+      "approval_gate"
+    ) {
+      const message =
+        step.config?.message ||
+        "Approval required to continue this workflow.";
+
+      await pauseApprovalGate(
+        graphqlRequest,
+        {
+          stepRunId,
+
+          workflowRunId,
+
+          message,
+        }
+      );
+
+      console.log(
+        `Workflow paused at approval gate: ${step.name}`
+      );
+
+      return res.status(200).json({
+        success: true,
+
+        message:
+          "Workflow paused awaiting approval",
+
+        workflow_run_id:
+          workflowRunId,
+
+        step_run_id:
+          stepRunId,
+
+        completed_step:
+          step.name,
+
+        status:
+          "paused",
+
+        approval_required:
+          true,
+      });
+    }
+
+    // ========================================================
+    // 6. EXECUTE CURRENT STEP
     // ========================================================
 
     let stepOutput;
@@ -225,6 +285,22 @@ export default async (
       }
 
       // ======================================================
+      // DB WRITE
+      // ======================================================
+
+      else if (
+        step.type ===
+        "db_write"
+      ) {
+        stepOutput =
+          await executeDbWriteStep(
+            graphqlRequest,
+            stepRunId,
+            stepInput
+          );
+      }
+
+      // ======================================================
       // CONDITIONAL BRANCH
       // ======================================================
 
@@ -240,7 +316,7 @@ export default async (
       }
 
       // ======================================================
-      // UNSUPPORTED
+      // UNSUPPORTED STEP
       // ======================================================
 
       else {
@@ -312,7 +388,8 @@ export default async (
             );
 
           // --------------------------------------------------
-          // Create a new step_run
+          // Create a NEW step run
+          // Hasura INSERT event starts execution again.
           // --------------------------------------------------
 
           const retryStepRun =
@@ -474,7 +551,7 @@ export default async (
     }
 
     // ========================================================
-    // 6. DETERMINE NEXT STEP
+    // 7. DETERMINE NEXT STEP
     // ========================================================
 
     let nextStep =
@@ -489,9 +566,10 @@ export default async (
     // ========================================================
     // CONDITIONAL BRANCH
     //
-    // Normally the next step is based on step_order.
-    // For conditional_branch we override that and choose
-    // true_step_id or false_step_id.
+    // Normal steps use step_order.
+    //
+    // Conditional branch overrides the normal next step
+    // using true_step_id / false_step_id.
     // ========================================================
 
     if (
@@ -522,11 +600,14 @@ export default async (
       nextStep =
         await getStepById(
           graphqlRequest,
+
           selectedStepId
         );
 
-      // Make sure the branch doesn't jump
-      // into another workflow.
+      // ------------------------------------------------------
+      // Security check:
+      // conditional branch cannot jump to another workflow.
+      // ------------------------------------------------------
 
       if (
         nextStep.workflow_id !==
@@ -539,7 +620,7 @@ export default async (
     }
 
     // ========================================================
-    // 7. CURRENT STEP COMPLETED
+    // 8. CREATE NEXT STEP
     // ========================================================
 
     if (nextStep) {
@@ -611,7 +692,7 @@ export default async (
     }
 
     // ========================================================
-    // 8. FINAL STEP
+    // 9. FINAL STEP
     // ========================================================
 
     await completeWorkflow(
