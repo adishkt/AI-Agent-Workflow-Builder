@@ -177,19 +177,6 @@ export default async (
 
     // ========================================================
     // 5. APPROVAL GATE
-    //
-    // Database type:
-    //
-    //     approval_gate
-    //
-    // Approval gates:
-    //
-    // - do not execute an LLM/HTTP/etc.
-    // - pause the step
-    // - pause the workflow
-    // - do NOT create the next step
-    //
-    // approveStep() resumes the workflow later.
     // ========================================================
 
     if (
@@ -336,6 +323,7 @@ export default async (
           `Unsupported step type: ${step.type}`
         );
       }
+
     } catch (stepError) {
       // ======================================================
       // STEP FAILED
@@ -456,6 +444,7 @@ export default async (
             error:
               errorMessage,
           });
+
         } catch (retryError) {
           // ==================================================
           // RETRY CREATION FAILED
@@ -576,8 +565,6 @@ export default async (
 
     // ========================================================
     // CONDITIONAL BRANCH
-    //
-    // Conditional branch overrides normal step ordering.
     // ========================================================
 
     if (
@@ -712,6 +699,12 @@ export default async (
 
         output:
           stepOutput,
+
+        // NEW:
+        // Used to increment organization quota
+        // when the workflow successfully completes.
+        organizationId:
+          step.workflow?.organization?.id,
       }
     );
 
@@ -721,6 +714,15 @@ export default async (
 
     console.log(
       `Workflow completed: ${workflowRunId}`
+    );
+
+    console.log(
+      "Organization:",
+      step.workflow?.organization?.id
+    );
+
+    console.log(
+      "Organization quota incremented by 1"
     );
 
     console.log(
@@ -748,6 +750,7 @@ export default async (
       status:
         "completed",
     });
+
   } catch (error) {
     // ========================================================
     // GLOBAL FUNCTION ERROR

@@ -19,6 +19,12 @@ export async function getCurrentStep(
         name
         type
         config
+
+        workflow {
+          organization {
+            id
+          }
+        }
       }
     }
   `;
@@ -441,12 +447,20 @@ export async function completeWorkflow(
     stepRunId,
     workflowRunId,
     output,
+    organizationId,
   }
 ) {
+  if (!organizationId) {
+    throw new Error(
+      "Organization ID is required to complete workflow"
+    );
+  }
+
   const mutation = `
     mutation CompleteWorkflow(
       $step_id: uuid!
       $workflow_run_id: uuid!
+      $organization_id: uuid!
       $output: jsonb
     ) {
 
@@ -487,6 +501,22 @@ export async function completeWorkflow(
         id
         status
       }
+
+      update_organizations_by_pk(
+        pk_columns: {
+          id:
+            $organization_id
+        }
+
+        _inc: {
+          quota_used:
+            1
+        }
+      ) {
+        id
+        quota_used
+        quota_limit
+      }
     }
   `;
 
@@ -498,6 +528,9 @@ export async function completeWorkflow(
 
       workflow_run_id:
         workflowRunId,
+
+      organization_id:
+        organizationId,
 
       output,
     }
@@ -588,44 +621,6 @@ export async function pauseApprovalGate(
 
 // ============================================================
 // APPROVE PAUSED STEP
-//
-// Security:
-// 1. Step run must exist.
-// 2. Step run must be paused.
-// 3. Workflow step must exist.
-// 4. Workflow step must be approval_gate.
-// 5. Workflow must exist.
-// 6. Approver must belong to workflow organization.
-// 7. Approver must be owner/editor.
-// 8. Approval step becomes completed.
-// 9. Workflow becomes running.
-// 10. Next step run is created.
-//
-// IMPORTANT:
-// Database uses:
-//
-//     type = "approval_gate"
-//
-// IMPORTANT DATA FLOW:
-//
-// Before approval:
-//
-// stepRun.input = {
-//   previous_output: <original step output>
-// }
-//
-// After approval, next step receives:
-//
-// {
-//   previous_output: <original step output>,
-//   approval: {
-//     approved: true,
-//     approved_by: "...",
-//     approved_at: "..."
-//   }
-// }
-//
-// This preserves the original LLM output.
 // ============================================================
 
 export async function approvePausedStep(
@@ -879,16 +874,6 @@ export async function approvePausedStep(
 
   // ----------------------------------------------------------
   // 10. PRESERVE PREVIOUS OUTPUT
-  //
-  // The approval step receives the previous step's
-  // output through stepRun.input.previous_output.
-  //
-  // DO NOT replace it with approvalOutput.
-  //
-  // Instead:
-  //
-  // previous_output = original LLM/HTTP/etc. output
-  // approval        = human approval information
   // ----------------------------------------------------------
 
   const previousOutput =
@@ -910,10 +895,6 @@ export async function approvePausedStep(
 
   if (nextStep) {
 
-    // --------------------------------------------------------
-    // SECURITY CHECK
-    // --------------------------------------------------------
-
     if (
       nextStep.workflow_id !==
       step.workflow_id
@@ -922,7 +903,6 @@ export async function approvePausedStep(
         "Next step belongs to a different workflow"
       );
     }
-
 
     const mutation = `
       mutation ApproveAndContinue(
