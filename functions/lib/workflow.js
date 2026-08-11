@@ -44,8 +44,61 @@ export async function getCurrentStep(
   return step;
 }
 
+
+// ============================================================
+// GET STEP BY ID
+//
+// Used by conditional_branch to select the true/false step.
+// ============================================================
+
+export async function getStepById(
+  graphqlRequest,
+  stepId
+) {
+  const query = `
+    query GetStepById(
+      $step_id: uuid!
+    ) {
+      workflow_steps_by_pk(
+        id: $step_id
+      ) {
+        id
+        workflow_id
+        step_order
+        name
+        type
+        config
+      }
+    }
+  `;
+
+  const data =
+    await graphqlRequest(
+      query,
+      {
+        step_id:
+          stepId,
+      }
+    );
+
+  const step =
+    data.workflow_steps_by_pk;
+
+  if (!step) {
+    throw new Error(
+      "Selected conditional branch step not found"
+    );
+  }
+
+  return step;
+}
+
+
 // ============================================================
 // GET NEXT STEP
+//
+// Normal sequential execution uses step_order.
+// Conditional branches can override this using getStepById().
 // ============================================================
 
 export async function getNextStep(
@@ -103,14 +156,12 @@ export async function getNextStep(
   );
 }
 
+
 // ============================================================
 // MARK STEP AS FAILED
 //
-// IMPORTANT:
-// This only marks the STEP failed.
-// It does NOT mark the workflow failed.
-//
-// This is used for temporary failures before retry.
+// This only marks the current step as failed.
+// The workflow remains running when a retry will be created.
 // ============================================================
 
 export async function markStepFailed(
@@ -159,10 +210,11 @@ export async function markStepFailed(
   );
 }
 
+
 // ============================================================
 // PERMANENT FAILURE
 //
-// Used only after all retries are exhausted.
+// Used after all retries are exhausted.
 // Marks BOTH step and workflow as failed.
 // ============================================================
 
@@ -233,11 +285,12 @@ export async function failExecution(
   );
 }
 
+
 // ============================================================
 // CREATE RETRY STEP RUN
 //
-// INSERT is intentional because Hasura is listening
-// for INSERT on step_runs.
+// INSERT is intentional because Hasura listens for INSERT
+// events on step_runs.
 // ============================================================
 
 export async function createRetryStepRun(
@@ -301,6 +354,7 @@ export async function createRetryStepRun(
 
   return data.insert_step_runs_one;
 }
+
 
 // ============================================================
 // COMPLETE CURRENT STEP + CREATE NEXT STEP
@@ -382,6 +436,7 @@ export async function completeAndCreateNext(
     }
   );
 }
+
 
 // ============================================================
 // COMPLETE FINAL WORKFLOW

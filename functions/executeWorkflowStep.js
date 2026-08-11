@@ -5,6 +5,7 @@ import {
 import {
   getCurrentStep,
   getNextStep,
+  getStepById,
   markStepFailed,
   failExecution,
   createRetryStepRun,
@@ -15,6 +16,14 @@ import {
 import {
   executeLLMStep,
 } from "./lib/llm.js";
+
+import {
+  executeHttpStep,
+} from "./lib/http.js";
+
+import {
+  executeConditionalStep,
+} from "./lib/condition.js";
 
 import {
   shouldRetry,
@@ -31,16 +40,13 @@ export default async (
   // FUNCTION TIME
   // ==========================================================
 
-  const startTime =
-    Date.now();
+  const startTime = Date.now();
 
-  const FUNCTION_TIMEOUT =
-    9000;
+  const FUNCTION_TIMEOUT = 9000;
 
-  const getRemainingTime =
-    () =>
-      FUNCTION_TIMEOUT -
-      (Date.now() - startTime);
+  const getRemainingTime = () =>
+    FUNCTION_TIMEOUT -
+    (Date.now() - startTime);
 
   try {
     // ========================================================
@@ -123,13 +129,9 @@ export default async (
       );
     }
 
-    if (
-      !process.env.OPENROUTER_API_KEY
-    ) {
-      throw new Error(
-        "OPENROUTER_API_KEY is not configured"
-      );
-    }
+    // OpenRouter is required for LLM steps.
+    // We don't need to reject HTTP-only steps
+    // just because the LLM key is missing.
 
     // ========================================================
     // 3. GRAPHQL CLIENT
@@ -150,6 +152,12 @@ export default async (
         workflowStepId
       );
 
+    if (!step) {
+      throw new Error(
+        "Workflow step could not be loaded"
+      );
+    }
+
     console.log(
       `Workflow ID: ${step.workflow_id}`
     );
@@ -167,53 +175,75 @@ export default async (
     );
 
     // ========================================================
-    // 5. GET NEXT STEP
-    // ========================================================
-
-    const nextStep =
-      await getNextStep(
-        graphqlRequest,
-
-        step.workflow_id,
-
-        step.step_order
-      );
-
-    if (nextStep) {
-      console.log(
-        `Next step: ${nextStep.name}`
-      );
-
-      console.log(
-        `Next step order: ${nextStep.step_order}`
-      );
-    } else {
-      console.log(
-        "This is the final workflow step"
-      );
-    }
-
-    // ========================================================
-    // 6. EXECUTE CURRENT STEP
+    // 5. EXECUTE CURRENT STEP
     // ========================================================
 
     let stepOutput;
 
     try {
+      // ======================================================
+      // LLM
+      // ======================================================
+
       if (
         step.type === "llm"
       ) {
+        if (
+          !process.env.OPENROUTER_API_KEY
+        ) {
+          throw new Error(
+            "OPENROUTER_API_KEY is not configured"
+          );
+        }
+
         stepOutput =
           await executeLLMStep(
             step,
-
             stepInput,
-
             {
               getRemainingTime,
             }
           );
-      } else {
+      }
+
+      // ======================================================
+      // HTTP REQUEST
+      // ======================================================
+
+      else if (
+        step.type ===
+        "http_request"
+      ) {
+        stepOutput =
+          await executeHttpStep(
+            step,
+            stepInput,
+            {
+              getRemainingTime,
+            }
+          );
+      }
+
+      // ======================================================
+      // CONDITIONAL BRANCH
+      // ======================================================
+
+      else if (
+        step.type ===
+        "conditional_branch"
+      ) {
+        stepOutput =
+          executeConditionalStep(
+            step,
+            stepInput
+          );
+      }
+
+      // ======================================================
+      // UNSUPPORTED
+      // ======================================================
+
+      else {
         throw new Error(
           `Unsupported step type: ${step.type}`
         );
@@ -258,13 +288,9 @@ export default async (
         );
 
         try {
-          // ----------------------------------------------
-          // Mark ONLY this step as failed.
-          //
-          // IMPORTANT:
-          // The workflow remains running because
-          // another retry will be created.
-          // ----------------------------------------------
+          // --------------------------------------------------
+          // Mark current step as failed
+          // --------------------------------------------------
 
           await markStepFailed(
             graphqlRequest,
@@ -276,22 +302,18 @@ export default async (
             currentAttempt
           );
 
-          // ----------------------------------------------
-          // Preserve the original input.
-          //
-          // This means previous_output is not lost.
-          // ----------------------------------------------
+          // --------------------------------------------------
+          // Preserve original input
+          // --------------------------------------------------
 
           const retryInput =
             getRetryInput(
               stepInput
             );
 
-          // ----------------------------------------------
-          // Create NEW step_run.
-          //
-          // Hasura INSERT trigger will execute it.
-          // ----------------------------------------------
+          // --------------------------------------------------
+          // Create a new step_run
+          // --------------------------------------------------
 
           const retryStepRun =
             await createRetryStepRun(
@@ -347,18 +369,14 @@ export default async (
               errorMessage,
           });
         } catch (retryError) {
-          // ==============================================
+          // ==================================================
           // RETRY CREATION FAILED
-          // ==============================================
+          // ==================================================
 
           console.error(
             "Could not create retry:",
             retryError
           );
-
-          // If we cannot create the retry,
-          // the workflow should be failed because
-          // execution cannot continue safely.
 
           try {
             await failExecution(
@@ -456,14 +474,75 @@ export default async (
     }
 
     // ========================================================
+    // 6. DETERMINE NEXT STEP
+    // ========================================================
+
+    let nextStep =
+      await getNextStep(
+        graphqlRequest,
+
+        step.workflow_id,
+
+        step.step_order
+      );
+
+    // ========================================================
+    // CONDITIONAL BRANCH
+    //
+    // Normally the next step is based on step_order.
+    // For conditional_branch we override that and choose
+    // true_step_id or false_step_id.
+    // ========================================================
+
+    if (
+      step.type ===
+      "conditional_branch"
+    ) {
+      const selectedStepId =
+        stepOutput.result
+          ? stepOutput.true_step_id
+          : stepOutput.false_step_id;
+
+      console.log(
+        "Conditional result:",
+        stepOutput.result
+      );
+
+      console.log(
+        "Selected step:",
+        selectedStepId
+      );
+
+      if (!selectedStepId) {
+        throw new Error(
+          `Conditional branch "${step.name}" does not define the selected next step`
+        );
+      }
+
+      nextStep =
+        await getStepById(
+          graphqlRequest,
+          selectedStepId
+        );
+
+      // Make sure the branch doesn't jump
+      // into another workflow.
+
+      if (
+        nextStep.workflow_id !==
+        step.workflow_id
+      ) {
+        throw new Error(
+          "Conditional branch cannot jump to a step in another workflow"
+        );
+      }
+    }
+
+    // ========================================================
     // 7. CURRENT STEP COMPLETED
     // ========================================================
 
     if (nextStep) {
-      // ======================================================
-      // CREATE NEXT STEP
-      // ======================================================
-
       const nextStepInput = {
         previous_output:
           stepOutput,
