@@ -448,7 +448,9 @@ export default async (req, res) => {
       firstStepRun =
         stepRunData
           .insert_step_runs_one;
+
     } catch (error) {
+
       console.error(
         "Failed to create first step run:",
         error
@@ -492,7 +494,9 @@ export default async (req, res) => {
               "Failed to create first step run",
           }
         );
+
       } catch (updateError) {
+
         console.error(
           "Failed to mark workflow run as failed:",
           updateError
@@ -503,7 +507,18 @@ export default async (req, res) => {
     }
 
     // ========================================================
-    // 12. RETURN
+    // 12. RETURN ACTION RESPONSE
+    //
+    // IMPORTANT:
+    // Hasura Action expects:
+    //
+    // success
+    // message
+    // workflow_id
+    // run_id
+    // status
+    // step_count
+    //
     // ========================================================
 
     console.log(
@@ -535,47 +550,45 @@ export default async (req, res) => {
     );
 
     console.log(
+      "Step Count:",
+      steps.length
+    );
+
+    console.log(
       "========================================"
     );
 
     return res.status(200).json({
+
+      // Required by Action
       success: true,
 
+      // Required by Action
       message:
         "Workflow execution started",
 
+      // Required by Action
       workflow_id:
         workflowId,
 
-      workflow_run_id:
+      // IMPORTANT:
+      // Action expects run_id,
+      // not workflow_run_id.
+      run_id:
         run.id,
 
-      step_run_id:
-        firstStepRun.id,
-
-      first_step_id:
-        firstStep.id,
-
-      first_step:
-        firstStep.name,
-
+      // Required by Action
       status:
         "running",
 
-      role:
-        membership.role,
-
-      quota_used:
-        quotaUsed,
-
-      quota_limit:
-        quotaLimit,
-
-      quota_remaining:
-        quotaLimit -
-        quotaUsed,
+      // IMPORTANT:
+      // Action expects step_count.
+      step_count:
+        steps.length,
     });
+
   } catch (error) {
+
     console.error(
       "triggerWorkflowRun error:",
       error
