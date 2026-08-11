@@ -590,23 +590,42 @@ export async function pauseApprovalGate(
 // APPROVE PAUSED STEP
 //
 // Security:
-//
 // 1. Step run must exist.
 // 2. Step run must be paused.
 // 3. Workflow step must exist.
 // 4. Workflow step must be approval_gate.
 // 5. Workflow must exist.
-// 6. User must belong to workflow organization.
-// 7. User must be owner/editor.
-// 8. Approval gate is completed.
-// 9. Workflow is resumed.
+// 6. Approver must belong to workflow organization.
+// 7. Approver must be owner/editor.
+// 8. Approval step becomes completed.
+// 9. Workflow becomes running.
 // 10. Next step run is created.
 //
 // IMPORTANT:
-// The database uses:
+// Database uses:
 //
 //     type = "approval_gate"
 //
+// IMPORTANT DATA FLOW:
+//
+// Before approval:
+//
+// stepRun.input = {
+//   previous_output: <original step output>
+// }
+//
+// After approval, next step receives:
+//
+// {
+//   previous_output: <original step output>,
+//   approval: {
+//     approved: true,
+//     approved_by: "...",
+//     approved_at: "..."
+//   }
+// }
+//
+// This preserves the original LLM output.
 // ============================================================
 
 export async function approvePausedStep(
@@ -843,7 +862,7 @@ export async function approvePausedStep(
 
 
   // ----------------------------------------------------------
-  // 9. APPROVAL OUTPUT
+  // 9. CREATE APPROVAL OUTPUT
   // ----------------------------------------------------------
 
   const approvalOutput = {
@@ -859,7 +878,34 @@ export async function approvePausedStep(
 
 
   // ----------------------------------------------------------
-  // 10. RESUME WITH NEXT STEP
+  // 10. PRESERVE PREVIOUS OUTPUT
+  //
+  // The approval step receives the previous step's
+  // output through stepRun.input.previous_output.
+  //
+  // DO NOT replace it with approvalOutput.
+  //
+  // Instead:
+  //
+  // previous_output = original LLM/HTTP/etc. output
+  // approval        = human approval information
+  // ----------------------------------------------------------
+
+  const previousOutput =
+    stepRun.input?.previous_output ??
+    null;
+
+  const nextStepInput = {
+    previous_output:
+      previousOutput,
+
+    approval:
+      approvalOutput,
+  };
+
+
+  // ----------------------------------------------------------
+  // 11. RESUME WITH NEXT STEP
   // ----------------------------------------------------------
 
   if (nextStep) {
@@ -981,10 +1027,8 @@ export async function approvePausedStep(
           output:
             approvalOutput,
 
-          input: {
-            previous_output:
-              approvalOutput,
-          },
+          input:
+            nextStepInput,
         }
       );
 
@@ -1004,7 +1048,7 @@ export async function approvePausedStep(
 
 
   // ----------------------------------------------------------
-  // 11. APPROVAL IS FINAL WORKFLOW STEP
+  // 12. APPROVAL IS FINAL WORKFLOW STEP
   // ----------------------------------------------------------
 
   const mutation = `
