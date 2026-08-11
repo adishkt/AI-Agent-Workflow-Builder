@@ -1,7 +1,9 @@
 :root {
   --text: #6b6375;
   --text-h: #08060d;
-  --bg: #fff;
+  --bg: #f7f7fb;
+  --surface: #fff;
+  --shadow-soft: rgba(0, 0, 0, 0.05) 0 4px 12px -4px;
   --border: #e5e4e7;
   --code-bg: #f4f3ec;
   --accent: #aa3bff;
@@ -34,7 +36,9 @@
   :root {
     --text: #9ca3af;
     --text-h: #f3f4f6;
-    --bg: #16171d;
+    --bg: #111318;
+    --surface: #181a21;
+    --shadow-soft: rgba(0, 0, 0, 0.3) 0 4px 12px -4px;
     --border: #2e303a;
     --code-bg: #1f2028;
     --accent: #c084fc;
@@ -58,7 +62,7 @@ body {
   width: 1126px;
   max-width: 100%;
   margin: 0 auto;
-  text-align: center;
+  text-align: left;
   border-inline: 1px solid var(--border);
   min-height: 100svh;
   display: flex;

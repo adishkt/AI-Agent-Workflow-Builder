@@ -1,17 +1,24 @@
+/* ============================================================
+   AUTH
+   ============================================================ */
 .auth-container {
   min-height: 100vh;
   display: flex;
   justify-content: center;
   align-items: center;
-  padding: 20px;
+  padding: 24px;
+  box-sizing: border-box;
 }
 
 .auth-card {
   width: 100%;
-  max-width: 400px;
-  padding: 30px;
-  border: 1px solid #ddd;
-  border-radius: 10px;
+  max-width: 420px;
+  padding: 32px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  text-align: left;
 }
 
 .auth-card h1 {
@@ -24,16 +31,43 @@
   line-height: 1.5;
 }
 
-.auth-card form {
+.auth-card form,
+.workflow-form form,
+.workflow-step-form form {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 16px;
 }
 
-.auth-card input {
-  padding: 10px;
-  font-size: 16px;
-  margin-bottom: 10px;
+.auth-card input,
+.workflow-form input,
+.workflow-form textarea,
+.workflow-step-form input,
+.workflow-step-form textarea,
+.workflow-step-form select,
+.workflow-card input,
+.workflow-card textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 11px 12px;
+  font: inherit;
+  color: var(--text-h);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  outline: none;
+}
+
+.auth-card input:focus,
+.workflow-form input:focus,
+.workflow-form textarea:focus,
+.workflow-step-form input:focus,
+.workflow-step-form textarea:focus,
+.workflow-step-form select:focus,
+.workflow-card input:focus,
+.workflow-card textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
 }
 
 .auth-card button {
@@ -54,5 +88,505 @@
   margin-top: 15px;
   background: transparent;
   border: none;
-  color: #2563eb;
+  color: var(--accent);
+}
+
+/* ============================================================
+   GLOBAL BUTTONS / FORMS
+   ============================================================ */
+button {
+  border: 1px solid var(--accent);
+  border-radius: 9px;
+  padding: 10px 14px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 650;
+  color: #fff;
+  background: var(--accent);
+  cursor: pointer;
+  transition: transform 0.15s ease, opacity 0.15s ease, background 0.15s ease;
+}
+
+button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.secondary-button {
+  color: var(--text-h);
+  background: var(--surface);
+  border-color: var(--border);
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.form-field label {
+  color: var(--text-h);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.form-field small {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.form-actions,
+.workflow-actions,
+.editor-toolbar,
+.dashboard-actions,
+.step-title-row,
+.step-card-top,
+.panel-header,
+.run-meta,
+.section-heading {
+  display: flex;
+  align-items: center;
+}
+
+.form-actions,
+.workflow-actions {
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.error {
+  color: #dc2626;
+  background: rgba(220, 38, 38, 0.08);
+  border: 1px solid rgba(220, 38, 38, 0.2);
+  border-radius: 9px;
+  padding: 10px 12px;
+}
+
+/* ============================================================
+   DASHBOARD
+   ============================================================ */
+.dashboard {
+  width: 100%;
+  max-width: 1126px;
+  margin: 0 auto;
+  padding: 36px 42px 70px;
+  box-sizing: border-box;
+  text-align: left;
+}
+
+.dashboard-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding-bottom: 28px;
+  border-bottom: 1px solid var(--border);
+}
+
+.dashboard-header h1 {
+  margin: 4px 0 5px;
+  font-size: 38px;
+}
+
+.dashboard-header p {
+  color: var(--text);
+}
+
+.user-area {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--text-h);
+  font-size: 14px;
+}
+
+.dashboard-actions {
+  justify-content: space-between;
+  gap: 20px;
+  margin: 34px 0 18px;
+}
+
+.dashboard-actions h2 {
+  margin: 2px 0 0;
+}
+
+.eyebrow {
+  display: inline-block;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+/* ============================================================
+   PANELS / WORKFLOWS
+   ============================================================ */
+.panel {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+}
+
+.workflow-card {
+  padding: 20px;
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  text-align: left;
+}
+
+.workflow-card h3 {
+  margin: 0 0 5px;
+  color: var(--text-h);
+}
+
+.workflow-card p {
+  margin-bottom: 8px;
+}
+
+.workflow-actions {
+  margin-top: 14px;
+}
+
+.workflow-form,
+.workflow-step-form {
+  margin-top: 24px;
+  padding: 24px;
+  text-align: left;
+}
+
+.workflow-form h2,
+.workflow-step-form h3 {
+  margin: 0;
+  color: var(--text-h);
+}
+
+.editor-toolbar {
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.workflow-header {
+  padding: 24px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.workflow-header h2 {
+  margin: 4px 0 7px;
+  font-size: 30px;
+}
+
+.run-summary {
+  min-width: 190px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 7px;
+}
+
+.run-summary small,
+.step-id {
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.section-heading {
+  justify-content: space-between;
+  gap: 18px;
+  margin: 28px 0 14px;
+}
+
+.section-heading.compact {
+  margin: 0 0 14px;
+}
+
+.section-heading h3 {
+  margin: 2px 0 0;
+  color: var(--text-h);
+}
+
+.step-count,
+.step-order-badge {
+  padding: 5px 9px;
+  border-radius: 999px;
+  color: var(--text-h);
+  background: var(--accent-bg);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.workflow-step-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.workflow-step-card {
+  padding: 18px;
+  text-align: left;
+}
+
+.step-card-top {
+  gap: 13px;
+}
+
+.step-number {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  color: #fff;
+  background: var(--accent);
+  font-weight: 800;
+}
+
+.step-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.step-title-row {
+  gap: 9px;
+  flex-wrap: wrap;
+}
+
+.step-title-row h4 {
+  margin: 0;
+  color: var(--text-h);
+}
+
+.type-pill,
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.type-pill {
+  color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.status-pill {
+  color: var(--text-h);
+  background: var(--code-bg);
+}
+
+.status-running {
+  color: #0369a1;
+  background: rgba(14, 165, 233, 0.12);
+}
+
+.status-paused {
+  color: #a16207;
+  background: rgba(234, 179, 8, 0.16);
+}
+
+.status-completed {
+  color: #15803d;
+  background: rgba(34, 197, 94, 0.14);
+}
+
+.status-failed {
+  color: #b91c1c;
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.status-pending {
+  color: var(--text);
+}
+
+.step-config,
+.step-output {
+  margin-top: 15px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.step-config summary,
+.step-output summary {
+  cursor: pointer;
+  color: var(--text-h);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 10px 0 0;
+  padding: 12px;
+  border-radius: 9px;
+  background: var(--code-bg);
+  color: var(--text-h);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ============================================================
+   APPROVAL / CONDITION
+   ============================================================ */
+.approval-panel {
+  margin-top: 18px;
+  padding: 18px 20px;
+  border: 1px solid rgba(234, 179, 8, 0.45);
+  border-radius: 14px;
+  background: rgba(234, 179, 8, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.approval-panel h3 {
+  margin: 3px 0 5px;
+  color: var(--text-h);
+}
+
+.inline-approval {
+  margin-top: 15px;
+  padding: 13px;
+  border-radius: 10px;
+  background: rgba(234, 179, 8, 0.08);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.inline-approval span {
+  flex: 1;
+  min-width: 180px;
+}
+
+.condition-result {
+  margin-top: 15px;
+  padding: 14px;
+  border-radius: 10px;
+  background: var(--code-bg);
+}
+
+.condition-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+}
+
+.condition-grid > div {
+  min-width: 0;
+}
+
+.condition-grid span {
+  display: block;
+  margin-bottom: 3px;
+  font-size: 11px;
+  color: var(--text);
+}
+
+.condition-grid strong {
+  color: var(--text-h);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.selected-branch {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.selected-branch strong {
+  color: var(--text-h);
+  font-family: var(--mono);
+}
+
+.step-error {
+  margin-top: 14px;
+  padding: 12px;
+  border-radius: 9px;
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  background: rgba(239, 68, 68, 0.07);
+  color: #b91c1c;
+}
+
+.step-error pre {
+  background: transparent;
+  padding: 4px 0 0;
+  color: #b91c1c;
+}
+
+.run-error {
+  margin-top: 16px;
+}
+
+.run-details {
+  margin-top: 24px;
+  padding: 18px;
+}
+
+.run-meta {
+  gap: 20px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.empty-state {
+  padding: 30px;
+  border: 1px dashed var(--border);
+  border-radius: 14px;
+  text-align: center;
+}
+
+.empty-state p + p {
+  margin-top: 5px;
+  font-size: 13px;
+}
+
+.add-step-button {
+  margin-top: 18px;
+  width: 100%;
+}
+
+@media (max-width: 760px) {
+  .dashboard {
+    padding: 24px 16px 50px;
+  }
+
+  .dashboard-header,
+  .workflow-header,
+  .approval-panel {
+    flex-direction: column;
+  }
+
+  .user-area,
+  .run-summary {
+    align-items: flex-start;
+  }
+
+  .dashboard-header h1 {
+    font-size: 30px;
+  }
+
+  .condition-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }

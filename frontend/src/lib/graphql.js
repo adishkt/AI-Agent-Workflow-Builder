@@ -1,96 +1,77 @@
 import { nhost } from "./nhost";
 
-// Get workflows available to the logged-in user
-export async function getWorkflows() {
+async function request(query, variables = {}) {
   const response = await nhost.graphql.request({
-    query: `
-      query GetWorkflows {
-        workflows(
-          order_by: {
-            created_at: desc
-          }
-        ) {
-          id
-          org_id
-          name
-          description
-          created_at
-          updated_at
-
-          workflow_steps(
-            order_by: {
-              step_order: asc
-            }
-          ) {
-            id
-            step_order
-            name
-            type
-            config
-          }
-        }
-      }
-    `,
+    query,
+    variables,
   });
 
   if (response.error) {
     throw new Error(
-      response.error.message || "Failed to load workflows"
+      response.error.message || "GraphQL request failed"
     );
   }
 
-  return response.body?.data?.workflows || [];
+  const errors = response.body?.errors;
+  if (errors?.length) {
+    throw new Error(errors[0]?.message || "GraphQL request failed");
+  }
+
+  return response.body?.data;
 }
 
-
-// Get the organization of the logged-in user
-export async function getUserOrganization() {
-  const response = await nhost.graphql.request({
-    query: `
-      query GetUserOrganization {
-        org_members(
-          limit: 1
-        ) {
-          org_id
-          role
-
-          organization {
-            id
-            name
-          }
+// Get workflows available to the logged-in user.
+export async function getWorkflows() {
+  const data = await request(`
+    query GetWorkflows {
+      workflows(order_by: { created_at: desc }) {
+        id
+        org_id
+        name
+        description
+        created_at
+        updated_at
+        workflow_steps(order_by: { step_order: asc }) {
+          id
+          workflow_id
+          step_order
+          name
+          type
+          config
         }
       }
-    `,
-  });
+    }
+  `);
 
-  if (response.error) {
-    throw new Error(
-      response.error.message ||
-        "Failed to load user organization"
-    );
-  }
+  return data?.workflows || [];
+}
 
-  const memberships =
-    response.body?.data?.org_members || [];
+export async function getUserOrganization() {
+  const data = await request(`
+    query GetUserOrganization {
+      org_members(limit: 1) {
+        org_id
+        role
+        organization {
+          id
+          name
+        }
+      }
+    }
+  `);
 
-  if (memberships.length === 0) {
-    throw new Error(
-      "You are not a member of any organization"
-    );
+  const memberships = data?.org_members || [];
+
+  if (!memberships.length) {
+    throw new Error("You are not a member of any organization");
   }
 
   return memberships[0];
 }
 
-
-// Create a new workflow
-export async function createWorkflow({
-  orgId,
-  name,
-  description,
-}) {
-  const response = await nhost.graphql.request({
-    query: `
+export async function createWorkflow({ orgId, name, description }) {
+  const data = await request(
+    `
       mutation CreateWorkflow(
         $orgId: uuid!
         $name: String!
@@ -112,31 +93,19 @@ export async function createWorkflow({
         }
       }
     `,
-    variables: {
+    {
       orgId,
       name,
       description: description || null,
-    },
-  });
+    }
+  );
 
-  if (response.error) {
-    throw new Error(
-      response.error.message ||
-        "Failed to create workflow"
-    );
-  }
-
-  return response.body?.data?.insert_workflows_one;
+  return data?.insert_workflows_one;
 }
 
-// Update a workflow
-export async function updateWorkflow({
-  id,
-  name,
-  description,
-}) {
-  const response = await nhost.graphql.request({
-    query: `
+export async function updateWorkflow({ id, name, description }) {
+  const data = await request(
+    `
       mutation UpdateWorkflow(
         $id: uuid!
         $name: String!
@@ -158,47 +127,31 @@ export async function updateWorkflow({
         }
       }
     `,
-    variables: {
+    {
       id,
       name,
       description: description || null,
-    },
-  });
+    }
+  );
 
-  if (response.error) {
-    throw new Error(
-      response.error.message || "Failed to update workflow"
-    );
-  }
-
-  return response.body?.data?.update_workflows_by_pk;
+  return data?.update_workflows_by_pk;
 }
 
-// Delete a workflow
 export async function deleteWorkflow(id) {
-  const response = await nhost.graphql.request({
-    query: `
+  const data = await request(
+    `
       mutation DeleteWorkflow($id: uuid!) {
         delete_workflows_by_pk(id: $id) {
           id
         }
       }
     `,
-    variables: {
-      id,
-    },
-  });
+    { id }
+  );
 
-  if (response.error) {
-    throw new Error(
-      response.error.message || "Failed to delete workflow"
-    );
-  }
-
-  return response.body?.data?.delete_workflows_by_pk;
+  return data?.delete_workflows_by_pk;
 }
 
-// Create a workflow step
 export async function createWorkflowStep({
   workflowId,
   stepOrder,
@@ -206,8 +159,8 @@ export async function createWorkflowStep({
   type,
   config,
 }) {
-  const response = await nhost.graphql.request({
-    query: `
+  const data = await request(
+    `
       mutation CreateWorkflowStep(
         $workflowId: uuid!
         $stepOrder: Int!
@@ -233,21 +186,95 @@ export async function createWorkflowStep({
         }
       }
     `,
-    variables: {
+    {
       workflowId,
       stepOrder,
       name,
       type,
       config,
-    },
-  });
+    }
+  );
 
-  if (response.error) {
-    throw new Error(
-      response.error.message ||
-        "Failed to create workflow step"
-    );
+  return data?.insert_workflow_steps_one;
+}
+
+// Start a workflow through the Hasura Action.
+export async function triggerWorkflowRun(workflowId) {
+  const data = await request(
+    `
+      mutation TriggerWorkflowRun($workflowId: uuid!) {
+        triggerWorkflowRun(workflow_id: $workflowId) {
+          success
+          message
+          workflow_id
+          run_id
+          status
+          step_count
+        }
+      }
+    `,
+    { workflowId }
+  );
+
+  const result = data?.triggerWorkflowRun;
+
+  if (!result?.success) {
+    throw new Error(result?.message || "Could not start workflow");
   }
 
-  return response.body?.data?.insert_workflow_steps_one;
+  return result;
+}
+
+// Approve a paused approval-gate step through the Hasura Action.
+export async function approveStep(stepRunId) {
+  const data = await request(
+    `
+      mutation ApproveStep($stepId: uuid!) {
+        approveStep(step_id: $stepId) {
+          success
+          message
+        }
+      }
+    `,
+    { stepId: stepRunId }
+  );
+
+  const result = data?.approveStep;
+
+  if (!result?.success) {
+    throw new Error(result?.message || "Could not approve step");
+  }
+
+  return result;
+}
+
+// Load a workflow run and all of its step runs.
+export async function getWorkflowRun(runId) {
+  const data = await request(
+    `
+      query GetWorkflowRun($runId: uuid!) {
+        workflow_runs_by_pk(id: $runId) {
+          id
+          workflow_id
+          status
+          error
+        }
+        step_runs(where: { workflow_run_id: { _eq: $runId } }) {
+          id
+          workflow_run_id
+          workflow_step_id
+          status
+          input
+          output
+          error
+        }
+      }
+    `,
+    { runId }
+  );
+
+  return {
+    run: data?.workflow_runs_by_pk || null,
+    stepRuns: data?.step_runs || [],
+  };
 }

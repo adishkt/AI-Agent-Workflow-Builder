@@ -7,8 +7,8 @@ import WorkflowEditor from "../workflow/WorkflowEditor";
 
 function Dashboard({ user, onLogout }) {
   const [showCreateForm, setShowCreateForm] = useState(false);
-
-  const [selectedWorkflow, setSelectedWorkflow] =useState(null);
+  const [selectedWorkflow, setSelectedWorkflow] = useState(null);
+  const [workflowRefreshKey, setWorkflowRefreshKey] = useState(0);
 
   const handleLogout = async () => {
     try {
@@ -20,68 +20,65 @@ function Dashboard({ user, onLogout }) {
         });
 
         if (result.error) {
-          console.error(
-            "Logout failed:",
-            result.error
-          );
+          console.error("Logout failed:", result.error);
           return;
         }
       }
 
       onLogout();
     } catch (error) {
-      console.error(
-        "Logout error:",
-        error
-      );
+      console.error("Logout error:", error);
     }
+  };
+
+  const handleWorkflowCreated = () => {
+    setShowCreateForm(false);
+    setWorkflowRefreshKey((value) => value + 1);
   };
 
   return (
     <main className="dashboard">
-      <h1>AI Workflow Builder</h1>
+      <header className="dashboard-header">
+        <div>
+          <span className="eyebrow">AI AUTOMATION</span>
+          <h1>AI Workflow Builder</h1>
+          <p>Build, run and monitor AI agent workflows.</p>
+        </div>
 
-      <p>
-        Welcome, {user?.email || "User"}
-      </p>
-
-      <button onClick={handleLogout}>
-        Logout
-      </button>
-
-      <hr />
+        <div className="user-area">
+          <span>{user?.email || "User"}</span>
+          <button className="secondary-button" onClick={handleLogout}>
+            Logout
+          </button>
+        </div>
+      </header>
 
       {showCreateForm ? (
         <WorkflowForm
-          onCreated={() => {
-            setShowCreateForm(false);
-          }}
-          onCancel={() => {
-            setShowCreateForm(false);
-          }}
+          onCreated={handleWorkflowCreated}
+          onCancel={() => setShowCreateForm(false)}
+        />
+      ) : selectedWorkflow ? (
+        <WorkflowEditor
+          workflow={selectedWorkflow}
+          onBack={() => setSelectedWorkflow(null)}
         />
       ) : (
         <>
-          <button
-            onClick={() => setShowCreateForm(true)}
-          >
-            + Create Workflow
-          </button>
+          <div className="dashboard-actions">
+            <div>
+              <span className="eyebrow">PROJECT</span>
+              <h2>Your workflows</h2>
+            </div>
+            <button onClick={() => setShowCreateForm(true)}>
+              + Create Workflow
+            </button>
+          </div>
 
-          {selectedWorkflow ? (
-            <WorkflowEditor
-              workflow={selectedWorkflow}
-              onBack={() =>
-                setSelectedWorkflow(null)
-              }
-            />
-          ) : (
-            <WorkflowList
-              onOpenWorkflow={(workflow) =>
-                setSelectedWorkflow(workflow)
-              }
-            />
-          )}
+          <WorkflowList
+            key={workflowRefreshKey}
+            onOpenWorkflow={(workflow) => setSelectedWorkflow(workflow)}
+          />
         </>
       )}
     </main>
