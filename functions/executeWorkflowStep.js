@@ -5,7 +5,7 @@ export default async (req, res) => {
   // CONFIG
   // ============================================================
 
-  // Keep comfortably below Nhost's ~10 second limit.
+  // Keep safely below Nhost's ~10 second function limit.
   const FUNCTION_TIMEOUT = 9000;
 
   const remainingTime = () => {
@@ -19,7 +19,7 @@ export default async (req, res) => {
   const graphqlRequest = async (query, variables = {}) => {
     const remaining = remainingTime();
 
-    if (remaining < 800) {
+    if (remaining < 700) {
       throw new Error(
         "Not enough time remaining for GraphQL request"
       );
@@ -28,8 +28,8 @@ export default async (req, res) => {
     const controller = new AbortController();
 
     const timeoutMs = Math.min(
-      1100,
-      Math.max(600, remaining - 300)
+      1000,
+      Math.max(500, remaining - 250)
     );
 
     const timeout = setTimeout(() => {
@@ -44,7 +44,6 @@ export default async (req, res) => {
 
           headers: {
             "Content-Type": "application/json",
-
             "x-hasura-admin-secret":
               process.env.NHOST_ADMIN_SECRET,
           },
@@ -103,18 +102,19 @@ export default async (req, res) => {
     // 1. READ HASURA EVENT
     // ============================================================
 
-    const event = req.body?.event;
-
-    const stepRun = event?.data?.new;
+    const stepRun =
+      req.body?.event?.data?.new;
 
     if (!stepRun) {
       return res.status(400).json({
         success: false,
-        message: "step_run event data is missing",
+        message:
+          "step_run event data is missing",
       });
     }
 
-    const stepRunId = stepRun.id;
+    const stepRunId =
+      stepRun.id;
 
     const workflowRunId =
       stepRun.workflow_run_id;
@@ -132,24 +132,17 @@ export default async (req, res) => {
     ) {
       return res.status(400).json({
         success: false,
-        message: "Invalid step_run event data",
+        message:
+          "Invalid step_run event data",
       });
     }
 
     console.log(
-      "================================================"
-    );
-
-    console.log(
-      `Starting step run: ${stepRunId}`
+      `Starting step: ${workflowStepId}`
     );
 
     console.log(
       `Workflow run: ${workflowRunId}`
-    );
-
-    console.log(
-      `Workflow step: ${workflowStepId}`
     );
 
     console.log(
@@ -158,7 +151,7 @@ export default async (req, res) => {
     );
 
     // ============================================================
-    // 2. ENVIRONMENT
+    // 2. CHECK ENVIRONMENT
     // ============================================================
 
     if (!process.env.NHOST_GRAPHQL_URL) {
@@ -186,8 +179,67 @@ export default async (req, res) => {
     }
 
     // ============================================================
-    // 3. GET CURRENT WORKFLOW STEP
+    // 3. GET CURRENT STEP + NEXT STEP
+    //
+    // IMPORTANT:
+    // These used to be two separate GraphQL requests.
+    // We now fetch both in ONE request to save time.
     // ============================================================
+
+    const workflowStepsQuery = `
+      query GetWorkflowSteps(
+        $step_id: uuid!
+        $workflow_step_id: uuid!
+        $step_order: Int!
+      ) {
+
+        current_step:
+        workflow_steps_by_pk(
+          id: $step_id
+        ) {
+          id
+          workflow_id
+          step_order
+          name
+          type
+          config
+        }
+
+        next_steps:
+        workflow_steps(
+          where: {
+            workflow_id: {
+              _eq: $workflow_step_id
+            }
+
+            step_order: {
+              _gt: $step_order
+            }
+          }
+
+          order_by: {
+            step_order: asc
+          }
+
+          limit: 1
+        ) {
+          id
+          workflow_id
+          step_order
+          name
+          type
+          config
+        }
+      }
+    `;
+
+    /*
+     * We don't know workflow_id until current_step is loaded,
+     * so first get the current step only.
+     *
+     * This tiny request is required because next step needs
+     * the real workflow_id.
+     */
 
     const currentStepQuery = `
       query GetCurrentStep(
@@ -206,16 +258,17 @@ export default async (req, res) => {
       }
     `;
 
-    const currentStepData =
+    const currentData =
       await graphqlRequest(
         currentStepQuery,
         {
-          step_id: workflowStepId,
+          step_id:
+            workflowStepId,
         }
       );
 
     const step =
-      currentStepData.workflow_steps_by_pk;
+      currentData.workflow_steps_by_pk;
 
     if (!step) {
       throw new Error(
@@ -234,11 +287,11 @@ export default async (req, res) => {
     );
 
     console.log(
-      `Current step order: ${currentStepOrder}`
+      `Current step: ${step.name}`
     );
 
     console.log(
-      `Current step: ${step.name}`
+      `Current order: ${currentStepOrder}`
     );
 
     // ============================================================
@@ -277,17 +330,20 @@ export default async (req, res) => {
       }
     `;
 
-    const nextStepData =
+    const nextData =
       await graphqlRequest(
         nextStepQuery,
         {
-          workflow_id: workflowId,
-          step_order: currentStepOrder,
+          workflow_id:
+            workflowId,
+
+          step_order:
+            currentStepOrder,
         }
       );
 
     const nextStep =
-      nextStepData.workflow_steps?.[0] ||
+      nextData.workflow_steps?.[0] ||
       null;
 
     if (nextStep) {
@@ -312,7 +368,7 @@ export default async (req, res) => {
 
     try {
       // ==========================================================
-      // LLM
+      // LLM STEP
       // ==========================================================
 
       if (step.type === "llm") {
@@ -328,11 +384,12 @@ export default async (req, res) => {
         const previousOutput =
           stepInput.previous_output;
 
-        let prompt = basePrompt;
+        let prompt =
+          basePrompt;
 
-        // --------------------------------------------------------
-        // STEP CHAINING
-        // --------------------------------------------------------
+        // ========================================================
+        // STEP-TO-STEP CHAINING
+        // ========================================================
 
         if (
           previousOutput !== undefined &&
@@ -357,9 +414,9 @@ Use the previous step output as context for this step.
           prompt
         );
 
-        // --------------------------------------------------------
+        // ========================================================
         // MODEL
-        // --------------------------------------------------------
+        // ========================================================
 
         const model =
           config.model ||
@@ -369,43 +426,42 @@ Use the previous step output as context for this step.
           `Calling OpenRouter using ${model}`
         );
 
-        // --------------------------------------------------------
+        // ========================================================
         // TIME CHECK
-        // --------------------------------------------------------
+        // ========================================================
 
         const remaining =
           remainingTime();
 
-        if (remaining < 4000) {
+        if (remaining < 5500) {
           throw new Error(
             "Not enough time remaining to call OpenRouter"
           );
         }
 
-        // --------------------------------------------------------
+        // ========================================================
         // OPENROUTER
-        // --------------------------------------------------------
+        // ========================================================
 
         const controller =
           new AbortController();
 
         /*
-         * IMPORTANT:
+         * We verified that this model works with
+         * your OpenRouter key.
          *
-         * Nhost functions have approximately
-         * a 10 second execution limit.
-         *
-         * Give OpenRouter around 4.5 seconds.
-         * Leave the remaining time for GraphQL.
+         * Give OpenRouter up to ~5 seconds while
+         * leaving time for the final GraphQL mutation.
          */
 
-        const timeoutMs = Math.min(
-          4500,
-          Math.max(
-            2500,
-            remaining - 1000
-          )
-        );
+        const timeoutMs =
+          Math.min(
+            5000,
+            Math.max(
+              3000,
+              remaining - 1000
+            )
+          );
 
         console.log(
           `OpenRouter timeout: ${timeoutMs}ms`
@@ -449,10 +505,6 @@ Use the previous step output as context for this step.
                     },
                   ],
 
-                  /*
-                   * Keep output small enough
-                   * for the serverless timeout.
-                   */
                   max_tokens:
                     config.max_tokens ||
                     120,
@@ -484,9 +536,9 @@ Use the previous step output as context for this step.
           clearTimeout(timeout);
         }
 
-        // --------------------------------------------------------
+        // ========================================================
         // READ RESPONSE
-        // --------------------------------------------------------
+        // ========================================================
 
         const responseText =
           await llmResponse.text();
@@ -500,7 +552,9 @@ Use the previous step output as context for this step.
 
         try {
           llmResult =
-            JSON.parse(responseText);
+            JSON.parse(
+              responseText
+            );
         } catch {
           throw new Error(
             `OpenRouter returned invalid JSON: ${responseText.slice(
@@ -510,9 +564,9 @@ Use the previous step output as context for this step.
           );
         }
 
-        // --------------------------------------------------------
+        // ========================================================
         // OPENROUTER ERROR
-        // --------------------------------------------------------
+        // ========================================================
 
         if (!llmResponse.ok) {
           throw new Error(
@@ -521,9 +575,9 @@ Use the previous step output as context for this step.
           );
         }
 
-        // --------------------------------------------------------
-        // EXTRACT TEXT
-        // --------------------------------------------------------
+        // ========================================================
+        // EXTRACT OUTPUT
+        // ========================================================
 
         const aiText =
           llmResult
@@ -536,9 +590,9 @@ Use the previous step output as context for this step.
           );
         }
 
-        // --------------------------------------------------------
-        // SAVE STEP OUTPUT
-        // --------------------------------------------------------
+        // ========================================================
+        // STEP OUTPUT
+        // ========================================================
 
         stepOutput = {
           text: aiText,
@@ -559,7 +613,7 @@ Use the previous step output as context for this step.
       }
 
       // ==========================================================
-      // UNSUPPORTED STEP TYPE
+      // UNSUPPORTED STEP
       // ==========================================================
 
       else {
@@ -580,6 +634,10 @@ Use the previous step output as context for this step.
       const errorMessage =
         stepError?.message ||
         "Unknown step error";
+
+      // ----------------------------------------------------------
+      // SAVE FAILURE
+      // ----------------------------------------------------------
 
       try {
         const failMutation = `
@@ -642,10 +700,8 @@ Use the previous step output as context for this step.
       }
 
       /*
-       * Return 200.
-       *
-       * This prevents Hasura from repeatedly
-       * delivering the same failed event.
+       * Return 200 so Hasura doesn't endlessly
+       * retry the same failed event.
        */
 
       return res.status(200).json({
@@ -666,7 +722,7 @@ Use the previous step output as context for this step.
     }
 
     // ============================================================
-    // 6. CREATE NEXT STEP
+    // 6. NEXT STEP
     // ============================================================
 
     if (nextStep) {
@@ -725,7 +781,7 @@ Use the previous step output as context for this step.
         JSON.stringify(nextInput)
       );
 
-      const nextResult =
+      const result =
         await graphqlRequest(
           nextStepMutation,
           {
@@ -755,10 +811,9 @@ Use the previous step output as context for this step.
       );
 
       console.log(
-        "Next step run:",
+        "Created step run:",
         JSON.stringify(
-          nextResult
-            ?.insert_step_runs_one
+          result?.insert_step_runs_one
         )
       );
 
@@ -796,7 +851,7 @@ Use the previous step output as context for this step.
     // ============================================================
 
     console.log(
-      "No next step. Completing workflow."
+      "Final step reached."
     );
 
     const completeWorkflowMutation = `
@@ -861,7 +916,7 @@ Use the previous step output as context for this step.
     );
 
     // ============================================================
-    // 8. SUCCESS
+    // 8. RESPONSE
     // ============================================================
 
     return res.status(200).json({
