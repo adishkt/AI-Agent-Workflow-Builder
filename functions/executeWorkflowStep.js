@@ -1,106 +1,38 @@
-export default async (req, res) => {
-  const startTime = Date.now();
+import {
+  createGraphQLClient,
+} from "./lib/graphql.js";
 
-  // ============================================================
-  // CONFIG
-  // ============================================================
+import {
+  getCurrentStep,
+  getNextStep,
+  failExecution,
+  completeAndCreateNext,
+  completeWorkflow,
+} from "./lib/workflow.js";
 
-  // Keep safely below Nhost's ~10 second function limit.
-  const FUNCTION_TIMEOUT = 9000;
+import {
+  executeLLMStep,
+} from "./lib/llm.js";
 
-  const remainingTime = () => {
-    return FUNCTION_TIMEOUT - (Date.now() - startTime);
-  };
+export default async (
+  req,
+  res
+) => {
+  const startTime =
+    Date.now();
 
-  // ============================================================
-  // GRAPHQL HELPER
-  // ============================================================
+  const FUNCTION_TIMEOUT =
+    9000;
 
-  const graphqlRequest = async (query, variables = {}) => {
-    const remaining = remainingTime();
-
-    if (remaining < 700) {
-      throw new Error(
-        "Not enough time remaining for GraphQL request"
-      );
-    }
-
-    const controller = new AbortController();
-
-    const timeoutMs = Math.min(
-      1000,
-      Math.max(500, remaining - 250)
-    );
-
-    const timeout = setTimeout(() => {
-      controller.abort();
-    }, timeoutMs);
-
-    try {
-      const response = await fetch(
-        process.env.NHOST_GRAPHQL_URL,
-        {
-          method: "POST",
-
-          headers: {
-            "Content-Type": "application/json",
-            "x-hasura-admin-secret":
-              process.env.NHOST_ADMIN_SECRET,
-          },
-
-          body: JSON.stringify({
-            query,
-            variables,
-          }),
-
-          signal: controller.signal,
-        }
-      );
-
-      const text = await response.text();
-
-      let result;
-
-      try {
-        result = JSON.parse(text);
-      } catch {
-        throw new Error(
-          `GraphQL returned invalid JSON: ${text.slice(
-            0,
-            500
-          )}`
-        );
-      }
-
-      if (!response.ok || result.errors) {
-        throw new Error(
-          result.errors?.[0]?.message ||
-            `GraphQL request failed with status ${response.status}`
-        );
-      }
-
-      return result.data;
-    } catch (error) {
-      if (error?.name === "AbortError") {
-        throw new Error(
-          "GraphQL request timed out"
-        );
-      }
-
-      throw error;
-    } finally {
-      clearTimeout(timeout);
-    }
-  };
-
-  // ============================================================
-  // MAIN
-  // ============================================================
+  const getRemainingTime =
+    () =>
+      FUNCTION_TIMEOUT -
+      (Date.now() - startTime);
 
   try {
-    // ============================================================
-    // 1. READ HASURA EVENT
-    // ============================================================
+    // ==========================================================
+    // 1. READ EVENT
+    // ==========================================================
 
     const stepRun =
       req.body?.event?.data?.new;
@@ -138,152 +70,62 @@ export default async (req, res) => {
     }
 
     console.log(
-      `Starting step: ${workflowStepId}`
+      `Starting step ${workflowStepId}`
     );
 
     console.log(
       `Workflow run: ${workflowRunId}`
     );
 
-    console.log(
-      "Step input:",
-      JSON.stringify(stepInput)
-    );
+    // ==========================================================
+    // 2. ENVIRONMENT
+    // ==========================================================
 
-    // ============================================================
-    // 2. CHECK ENVIRONMENT
-    // ============================================================
-
-    if (!process.env.NHOST_GRAPHQL_URL) {
-      return res.status(500).json({
-        success: false,
-        message:
-          "NHOST_GRAPHQL_URL is not configured",
-      });
-    }
-
-    if (!process.env.NHOST_ADMIN_SECRET) {
-      return res.status(500).json({
-        success: false,
-        message:
-          "NHOST_ADMIN_SECRET is not configured",
-      });
-    }
-
-    if (!process.env.OPENROUTER_API_KEY) {
-      return res.status(500).json({
-        success: false,
-        message:
-          "OPENROUTER_API_KEY is not configured",
-      });
-    }
-
-    // ============================================================
-    // 3. GET CURRENT STEP + NEXT STEP
-    //
-    // IMPORTANT:
-    // These used to be two separate GraphQL requests.
-    // We now fetch both in ONE request to save time.
-    // ============================================================
-
-    const workflowStepsQuery = `
-      query GetWorkflowSteps(
-        $step_id: uuid!
-        $workflow_step_id: uuid!
-        $step_order: Int!
-      ) {
-
-        current_step:
-        workflow_steps_by_pk(
-          id: $step_id
-        ) {
-          id
-          workflow_id
-          step_order
-          name
-          type
-          config
-        }
-
-        next_steps:
-        workflow_steps(
-          where: {
-            workflow_id: {
-              _eq: $workflow_step_id
-            }
-
-            step_order: {
-              _gt: $step_order
-            }
-          }
-
-          order_by: {
-            step_order: asc
-          }
-
-          limit: 1
-        ) {
-          id
-          workflow_id
-          step_order
-          name
-          type
-          config
-        }
-      }
-    `;
-
-    /*
-     * We don't know workflow_id until current_step is loaded,
-     * so first get the current step only.
-     *
-     * This tiny request is required because next step needs
-     * the real workflow_id.
-     */
-
-    const currentStepQuery = `
-      query GetCurrentStep(
-        $step_id: uuid!
-      ) {
-        workflow_steps_by_pk(
-          id: $step_id
-        ) {
-          id
-          workflow_id
-          step_order
-          name
-          type
-          config
-        }
-      }
-    `;
-
-    const currentData =
-      await graphqlRequest(
-        currentStepQuery,
-        {
-          step_id:
-            workflowStepId,
-        }
+    if (
+      !process.env.NHOST_GRAPHQL_URL
+    ) {
+      throw new Error(
+        "NHOST_GRAPHQL_URL is not configured"
       );
+    }
+
+    if (
+      !process.env.NHOST_ADMIN_SECRET
+    ) {
+      throw new Error(
+        "NHOST_ADMIN_SECRET is not configured"
+      );
+    }
+
+    if (
+      !process.env.OPENROUTER_API_KEY
+    ) {
+      throw new Error(
+        "OPENROUTER_API_KEY is not configured"
+      );
+    }
+
+    // ==========================================================
+    // 3. GRAPHQL CLIENT
+    // ==========================================================
+
+    const graphqlRequest =
+      createGraphQLClient({
+        getRemainingTime,
+      });
+
+    // ==========================================================
+    // 4. GET CURRENT STEP
+    // ==========================================================
 
     const step =
-      currentData.workflow_steps_by_pk;
-
-    if (!step) {
-      throw new Error(
-        "Workflow step not found"
+      await getCurrentStep(
+        graphqlRequest,
+        workflowStepId
       );
-    }
-
-    const workflowId =
-      step.workflow_id;
-
-    const currentStepOrder =
-      step.step_order;
 
     console.log(
-      `Workflow ID: ${workflowId}`
+      `Workflow ID: ${step.workflow_id}`
     );
 
     console.log(
@@ -291,68 +133,25 @@ export default async (req, res) => {
     );
 
     console.log(
-      `Current order: ${currentStepOrder}`
+      `Current order: ${step.step_order}`
     );
 
-    // ============================================================
-    // 4. GET NEXT STEP
-    // ============================================================
-
-    const nextStepQuery = `
-      query GetNextStep(
-        $workflow_id: uuid!
-        $step_order: Int!
-      ) {
-        workflow_steps(
-          where: {
-            workflow_id: {
-              _eq: $workflow_id
-            }
-
-            step_order: {
-              _gt: $step_order
-            }
-          }
-
-          order_by: {
-            step_order: asc
-          }
-
-          limit: 1
-        ) {
-          id
-          workflow_id
-          step_order
-          name
-          type
-          config
-        }
-      }
-    `;
-
-    const nextData =
-      await graphqlRequest(
-        nextStepQuery,
-        {
-          workflow_id:
-            workflowId,
-
-          step_order:
-            currentStepOrder,
-        }
-      );
+    // ==========================================================
+    // 5. GET NEXT STEP
+    // ==========================================================
 
     const nextStep =
-      nextData.workflow_steps?.[0] ||
-      null;
+      await getNextStep(
+        graphqlRequest,
+
+        step.workflow_id,
+
+        step.step_order
+      );
 
     if (nextStep) {
       console.log(
         `Next step: ${nextStep.name}`
-      );
-
-      console.log(
-        `Next step order: ${nextStep.step_order}`
       );
     } else {
       console.log(
@@ -360,271 +159,33 @@ export default async (req, res) => {
       );
     }
 
-    // ============================================================
-    // 5. EXECUTE STEP
-    // ============================================================
+    // ==========================================================
+    // 6. EXECUTE STEP
+    // ==========================================================
 
     let stepOutput;
 
     try {
-      // ==========================================================
-      // LLM STEP
-      // ==========================================================
-
-      if (step.type === "llm") {
-        const config =
-          step.config || {};
-
-        const basePrompt =
-          config.prompt ??
-          config.message ??
-          step.name ??
-          "Complete this task.";
-
-        const previousOutput =
-          stepInput.previous_output;
-
-        let prompt =
-          basePrompt;
-
-        // ========================================================
-        // STEP-TO-STEP CHAINING
-        // ========================================================
-
-        if (
-          previousOutput !== undefined &&
-          previousOutput !== null
-        ) {
-          prompt += `
-
-Previous step output:
-${JSON.stringify(previousOutput)}
-
-Use the previous step output as context for this step.
-`;
-        }
-
-        console.log(
-          "Previous output:",
-          JSON.stringify(previousOutput)
-        );
-
-        console.log(
-          "Final prompt:",
-          prompt
-        );
-
-        // ========================================================
-        // MODEL
-        // ========================================================
-
-        const model =
-          config.model ||
-          "openai/gpt-4o-mini";
-
-        console.log(
-          `Calling OpenRouter using ${model}`
-        );
-
-        // ========================================================
-        // TIME CHECK
-        // ========================================================
-
-        const remaining =
-          remainingTime();
-
-        if (remaining < 5500) {
-          throw new Error(
-            "Not enough time remaining to call OpenRouter"
+      if (
+        step.type === "llm"
+      ) {
+        stepOutput =
+          await executeLLMStep(
+            step,
+            stepInput,
+            {
+              getRemainingTime,
+            }
           );
-        }
-
-        // ========================================================
-        // OPENROUTER
-        // ========================================================
-
-        const controller =
-          new AbortController();
-
-        /*
-         * We verified that this model works with
-         * your OpenRouter key.
-         *
-         * Give OpenRouter up to ~5 seconds while
-         * leaving time for the final GraphQL mutation.
-         */
-
-        const timeoutMs =
-          Math.min(
-            5000,
-            Math.max(
-              3000,
-              remaining - 1000
-            )
-          );
-
-        console.log(
-          `OpenRouter timeout: ${timeoutMs}ms`
-        );
-
-        const timeout =
-          setTimeout(() => {
-            controller.abort();
-          }, timeoutMs);
-
-        let llmResponse;
-
-        try {
-          llmResponse =
-            await fetch(
-              "https://openrouter.ai/api/v1/chat/completions",
-              {
-                method: "POST",
-
-                headers: {
-                  "Content-Type":
-                    "application/json",
-
-                  Authorization:
-                    `Bearer ${process.env.OPENROUTER_API_KEY}`,
-
-                  "HTTP-Referer":
-                    "https://app.nhost.io",
-
-                  "X-Title":
-                    "AI Agent Workflow Builder",
-                },
-
-                body: JSON.stringify({
-                  model,
-
-                  messages: [
-                    {
-                      role: "user",
-                      content: prompt,
-                    },
-                  ],
-
-                  max_tokens:
-                    config.max_tokens ||
-                    120,
-
-                  stream: false,
-                }),
-
-                signal:
-                  controller.signal,
-              }
-            );
-        } catch (error) {
-          if (
-            error?.name ===
-            "AbortError"
-          ) {
-            throw new Error(
-              "OpenRouter request timed out"
-            );
-          }
-
-          throw new Error(
-            `Could not connect to OpenRouter: ${
-              error?.message ||
-              "Unknown error"
-            }`
-          );
-        } finally {
-          clearTimeout(timeout);
-        }
-
-        // ========================================================
-        // READ RESPONSE
-        // ========================================================
-
-        const responseText =
-          await llmResponse.text();
-
-        console.log(
-          "OpenRouter HTTP status:",
-          llmResponse.status
-        );
-
-        let llmResult;
-
-        try {
-          llmResult =
-            JSON.parse(
-              responseText
-            );
-        } catch {
-          throw new Error(
-            `OpenRouter returned invalid JSON: ${responseText.slice(
-              0,
-              500
-            )}`
-          );
-        }
-
-        // ========================================================
-        // OPENROUTER ERROR
-        // ========================================================
-
-        if (!llmResponse.ok) {
-          throw new Error(
-            llmResult?.error?.message ||
-              `OpenRouter request failed with status ${llmResponse.status}`
-          );
-        }
-
-        // ========================================================
-        // EXTRACT OUTPUT
-        // ========================================================
-
-        const aiText =
-          llmResult
-            ?.choices?.[0]
-            ?.message?.content;
-
-        if (!aiText) {
-          throw new Error(
-            "OpenRouter returned no text response"
-          );
-        }
-
-        // ========================================================
-        // STEP OUTPUT
-        // ========================================================
-
-        stepOutput = {
-          text: aiText,
-
-          model:
-            llmResult.model ||
-            model,
-        };
-
-        console.log(
-          "LLM step completed"
-        );
-
-        console.log(
-          "Step output:",
-          JSON.stringify(stepOutput)
-        );
-      }
-
-      // ==========================================================
-      // UNSUPPORTED STEP
-      // ==========================================================
-
-      else {
+      } else {
         throw new Error(
           `Unsupported step type: ${step.type}`
         );
       }
     } catch (stepError) {
-      // ==========================================================
-      // STEP FAILED
-      // ==========================================================
+      // ========================================================
+      // STEP FAILURE
+      // ========================================================
 
       console.error(
         `Step failed: ${step.name}`,
@@ -635,62 +196,15 @@ Use the previous step output as context for this step.
         stepError?.message ||
         "Unknown step error";
 
-      // ----------------------------------------------------------
-      // SAVE FAILURE
-      // ----------------------------------------------------------
-
       try {
-        const failMutation = `
-          mutation FailExecution(
-            $step_id: uuid!
-            $workflow_run_id: uuid!
-            $error: String!
-          ) {
+        await failExecution(
+          graphqlRequest,
 
-            update_step_runs_by_pk(
-              pk_columns: {
-                id: $step_id
-              }
+          stepRunId,
 
-              _set: {
-                status: "failed"
-                error: $error
-              }
-            ) {
-              id
-              status
-              error
-            }
+          workflowRunId,
 
-            update_workflow_runs_by_pk(
-              pk_columns: {
-                id: $workflow_run_id
-              }
-
-              _set: {
-                status: "failed"
-                error: $error
-              }
-            ) {
-              id
-              status
-              error
-            }
-          }
-        `;
-
-        await graphqlRequest(
-          failMutation,
-          {
-            step_id:
-              stepRunId,
-
-            workflow_run_id:
-              workflowRunId,
-
-            error:
-              errorMessage,
-          }
+          errorMessage
         );
       } catch (dbError) {
         console.error(
@@ -699,11 +213,8 @@ Use the previous step output as context for this step.
         );
       }
 
-      /*
-       * Return 200 so Hasura doesn't endlessly
-       * retry the same failed event.
-       */
-
+      // Return 200 so Hasura doesn't
+      // endlessly retry this event.
       return res.status(200).json({
         success: false,
 
@@ -721,86 +232,25 @@ Use the previous step output as context for this step.
       });
     }
 
-    // ============================================================
-    // 6. NEXT STEP
-    // ============================================================
+    // ==========================================================
+    // 7. NEXT STEP
+    // ==========================================================
 
     if (nextStep) {
-      const nextStepMutation = `
-        mutation CompleteAndCreateNext(
-          $step_id: uuid!
-          $workflow_run_id: uuid!
-          $next_workflow_step_id: uuid!
-          $output: jsonb
-          $input: jsonb
-        ) {
+      await completeAndCreateNext(
+        graphqlRequest,
+        {
+          stepRunId,
 
-          update_step_runs_by_pk(
-            pk_columns: {
-              id: $step_id
-            }
+          workflowRunId,
 
-            _set: {
-              status: "completed"
-              output: $output
-              error: null
-            }
-          ) {
-            id
-            status
-            output
-          }
+          nextStepId:
+            nextStep.id,
 
-          insert_step_runs_one(
-            object: {
-              workflow_run_id:
-                $workflow_run_id
-
-              workflow_step_id:
-                $next_workflow_step_id
-
-              status: "pending"
-
-              input: $input
-            }
-          ) {
-            id
-            status
-            input
-          }
+          output:
+            stepOutput,
         }
-      `;
-
-      const nextInput = {
-        previous_output:
-          stepOutput,
-      };
-
-      console.log(
-        "Creating next step with input:",
-        JSON.stringify(nextInput)
       );
-
-      const result =
-        await graphqlRequest(
-          nextStepMutation,
-          {
-            step_id:
-              stepRunId,
-
-            workflow_run_id:
-              workflowRunId,
-
-            next_workflow_step_id:
-              nextStep.id,
-
-            output:
-              stepOutput,
-
-            input:
-              nextInput,
-          }
-        );
 
       console.log(
         `Completed: ${step.name}`
@@ -808,13 +258,6 @@ Use the previous step output as context for this step.
 
       console.log(
         `Next step created: ${nextStep.name}`
-      );
-
-      console.log(
-        "Created step run:",
-        JSON.stringify(
-          result?.insert_step_runs_one
-        )
       );
 
       return res.status(200).json({
@@ -846,61 +289,16 @@ Use the previous step output as context for this step.
       });
     }
 
-    // ============================================================
-    // 7. FINAL STEP
-    // ============================================================
+    // ==========================================================
+    // 8. FINAL STEP
+    // ==========================================================
 
-    console.log(
-      "Final step reached."
-    );
-
-    const completeWorkflowMutation = `
-      mutation CompleteWorkflow(
-        $step_id: uuid!
-        $workflow_run_id: uuid!
-        $output: jsonb
-      ) {
-
-        update_step_runs_by_pk(
-          pk_columns: {
-            id: $step_id
-          }
-
-          _set: {
-            status: "completed"
-            output: $output
-            error: null
-          }
-        ) {
-          id
-          status
-          output
-        }
-
-        update_workflow_runs_by_pk(
-          pk_columns: {
-            id: $workflow_run_id
-          }
-
-          _set: {
-            status: "completed"
-            error: null
-          }
-        ) {
-          id
-          status
-        }
-      }
-    `;
-
-    await graphqlRequest(
-      completeWorkflowMutation,
+    await completeWorkflow(
+      graphqlRequest,
       {
-        step_id:
-          stepRunId,
+        stepRunId,
 
-        workflow_run_id:
-          workflowRunId,
+        workflowRunId,
 
         output:
           stepOutput,
@@ -914,10 +312,6 @@ Use the previous step output as context for this step.
     console.log(
       `Workflow completed: ${workflowRunId}`
     );
-
-    // ============================================================
-    // 8. RESPONSE
-    // ============================================================
 
     return res.status(200).json({
       success: true,
@@ -941,9 +335,9 @@ Use the previous step output as context for this step.
         "completed",
     });
   } catch (error) {
-    // ============================================================
+    // ==========================================================
     // GLOBAL ERROR
-    // ============================================================
+    // ==========================================================
 
     console.error(
       "Function error:",
