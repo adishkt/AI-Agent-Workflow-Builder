@@ -10,10 +10,46 @@ export default async (
   req,
   res
 ) => {
+  // ========================================================
+  // CORS
+  // ========================================================
+
+  res.setHeader(
+    "Access-Control-Allow-Origin",
+    "*"
+  );
+
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, x-hasura-user-id"
+  );
+
+  res.setHeader(
+    "Access-Control-Allow-Methods",
+    "POST, OPTIONS"
+  );
+
+  // Handle browser preflight request
+  if (req.method === "OPTIONS") {
+    return res.status(204).end();
+  }
+
   try {
-    // ========================================================
-    // 1. GET AUTHENTICATED USER
-    // ========================================================
+    // ======================================================
+    // 1. ONLY ALLOW POST
+    // ======================================================
+
+    if (req.method !== "POST") {
+      return res.status(405).json({
+        success: false,
+        message:
+          "Method not allowed. Use POST.",
+      });
+    }
+
+    // ======================================================
+    // 2. GET AUTHENTICATED USER
+    // ======================================================
 
     const userId =
       req.body?.session_variables?.[
@@ -28,9 +64,9 @@ export default async (
       });
     }
 
-    // ========================================================
-    // 2. GET STEP RUN ID
-    // ========================================================
+    // ======================================================
+    // 3. GET STEP RUN ID
+    // ======================================================
 
     const stepRunId =
       req.body?.input?.step_run_id;
@@ -43,29 +79,41 @@ export default async (
       });
     }
 
-    // ========================================================
-    // 3. ENVIRONMENT
-    // ========================================================
+    // ======================================================
+    // 4. ENVIRONMENT
+    // ======================================================
 
     if (
       !process.env.NHOST_GRAPHQL_URL
     ) {
-      throw new Error(
+      console.error(
         "NHOST_GRAPHQL_URL is not configured"
       );
+
+      return res.status(500).json({
+        success: false,
+        message:
+          "NHOST_GRAPHQL_URL is not configured",
+      });
     }
 
     if (
       !process.env.NHOST_ADMIN_SECRET
     ) {
-      throw new Error(
+      console.error(
         "NHOST_ADMIN_SECRET is not configured"
       );
+
+      return res.status(500).json({
+        success: false,
+        message:
+          "NHOST_ADMIN_SECRET is not configured",
+      });
     }
 
-    // ========================================================
-    // 4. GRAPHQL CLIENT
-    // ========================================================
+    // ======================================================
+    // 5. GRAPHQL CLIENT
+    // ======================================================
 
     const graphqlRequest =
       createGraphQLClient({
@@ -73,27 +121,62 @@ export default async (
           () => 8000,
       });
 
-    // ========================================================
-    // 5. APPROVE
+    // ======================================================
+    // 6. APPROVE PAUSED STEP
     //
-    // approvePausedStep itself verifies:
+    // approvePausedStep verifies:
     //
-    // - step exists
+    // - step run exists
+    // - step is paused
+    // - workflow step exists
     // - step is approval_gate
     // - workflow exists
-    // - user belongs to workflow org
+    // - user belongs to workflow organization
     // - user is owner/editor
-    // ========================================================
+    // - next step is resolved
+    // - approval step is completed
+    // - workflow resumes
+    // - next step run is created
+    // ======================================================
+
+    console.log(
+      "========================================"
+    );
+
+    console.log(
+      "Approving workflow step"
+    );
+
+    console.log(
+      "Step run:",
+      stepRunId
+    );
+
+    console.log(
+      "User:",
+      userId
+    );
 
     const result =
       await approvePausedStep(
         graphqlRequest,
         {
           stepRunId,
-
           userId,
         }
       );
+
+    console.log(
+      "Approval successful"
+    );
+
+    console.log(
+      "========================================"
+    );
+
+    // ======================================================
+    // 7. SUCCESS RESPONSE
+    // ======================================================
 
     return res.status(200).json({
       success: true,
@@ -104,23 +187,103 @@ export default async (
       step_run_id:
         stepRunId,
 
+      status:
+        "approved",
+
       approved_by:
         userId,
 
       result,
     });
   } catch (error) {
+    // ======================================================
+    // ERROR HANDLING
+    // ======================================================
+
     console.error(
-      "approveStep error:",
+      "========================================"
+    );
+
+    console.error(
+      "approveStep error:"
+    );
+
+    console.error(
       error
     );
 
-    return res.status(403).json({
-      success: false,
+    console.error(
+      "========================================"
+    );
 
-      message:
-        error?.message ||
-        "Could not approve step",
+    const message =
+      error?.message ||
+      "Could not approve step";
+
+    // ======================================================
+    // AUTHORIZATION ERRORS
+    // ======================================================
+
+    if (
+      message.includes(
+        "not a member"
+      ) ||
+      message.includes(
+        "Only an owner or editor"
+      )
+    ) {
+      return res.status(403).json({
+        success: false,
+        message,
+      });
+    }
+
+    // ======================================================
+    // NOT FOUND ERRORS
+    // ======================================================
+
+    if (
+      message.includes(
+        "Step run not found"
+      ) ||
+      message.includes(
+        "Workflow step not found"
+      ) ||
+      message.includes(
+        "Workflow not found"
+      )
+    ) {
+      return res.status(404).json({
+        success: false,
+        message,
+      });
+    }
+
+    // ======================================================
+    // INVALID STATE
+    // ======================================================
+
+    if (
+      message.includes(
+        "not waiting for approval"
+      ) ||
+      message.includes(
+        "not an approval gate"
+      )
+    ) {
+      return res.status(409).json({
+        success: false,
+        message,
+      });
+    }
+
+    // ======================================================
+    // INTERNAL ERROR
+    // ======================================================
+
+    return res.status(500).json({
+      success: false,
+      message,
     });
   }
 };
