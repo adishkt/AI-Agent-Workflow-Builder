@@ -6,7 +6,7 @@ import { nhost } from "./nhost";
 |--------------------------------------------------------------------------
 |
 | role:
-|   null   -> use normal authenticated "user" role
+|   null   -> normal authenticated user role
 |   owner  -> organization owner
 |   editor -> organization editor
 |   viewer -> organization viewer
@@ -21,8 +21,8 @@ async function request(
   const options = {};
 
   /*
-   * Only send x-hasura-role when we explicitly
-   * want an organization role.
+   * Only send x-hasura-role when explicitly
+   * using an organization role.
    */
   if (role) {
     options.headers = {
@@ -83,16 +83,11 @@ async function request(
 | Get Current User Organization
 |--------------------------------------------------------------------------
 |
-| IMPORTANT:
+| We use the normal authenticated user role.
 |
-| We first query org_members using the normal authenticated
-| "user" role.
-|
-| Hasura permission should restrict this query using:
+| Hasura should restrict org_members using:
 |
 | user_id _eq X-Hasura-User-Id
-|
-| We DO NOT use x-hasura-role: owner here.
 |
 */
 
@@ -140,10 +135,6 @@ export async function getUserOrganization() {
   const role =
     membership.role;
 
-  /*
-   * Make sure our application only accepts
-   * the organization roles we support.
-   */
   if (
     ![
       "owner",
@@ -191,11 +182,6 @@ export async function getCurrentUserRole() {
 |--------------------------------------------------------------------------
 | Get Workflows
 |--------------------------------------------------------------------------
-|
-| owner  -> SELECT
-| editor -> SELECT
-| viewer -> SELECT
-|
 */
 
 export async function getWorkflows() {
@@ -258,6 +244,12 @@ export async function getWorkflows() {
 export async function getWorkflow(
   workflowId
 ) {
+  if (!workflowId) {
+    throw new Error(
+      "workflowId is required"
+    );
+  }
+
   const membership =
     await getUserOrganization();
 
@@ -306,7 +298,10 @@ export async function getWorkflow(
       role
     );
 
-  return data?.workflows_by_pk || null;
+  return (
+    data?.workflows_by_pk ||
+    null
+  );
 }
 
 
@@ -314,11 +309,6 @@ export async function getWorkflow(
 |--------------------------------------------------------------------------
 | Create Workflow
 |--------------------------------------------------------------------------
-|
-| owner  -> allowed
-| editor -> allowed
-| viewer -> rejected by Hasura
-|
 */
 
 export async function createWorkflow({
@@ -326,6 +316,18 @@ export async function createWorkflow({
   name,
   description,
 }) {
+  if (!orgId) {
+    throw new Error(
+      "orgId is required"
+    );
+  }
+
+  if (!name?.trim()) {
+    throw new Error(
+      "Workflow name is required"
+    );
+  }
+
   const membership =
     await getUserOrganization();
 
@@ -365,7 +367,10 @@ export async function createWorkflow({
       role
     );
 
-  return data?.insert_workflows_one || null;
+  return (
+    data?.insert_workflows_one ||
+    null
+  );
 }
 
 
@@ -373,11 +378,6 @@ export async function createWorkflow({
 |--------------------------------------------------------------------------
 | Update Workflow
 |--------------------------------------------------------------------------
-|
-| owner  -> allowed
-| editor -> allowed
-| viewer -> rejected
-|
 */
 
 export async function updateWorkflow({
@@ -385,6 +385,18 @@ export async function updateWorkflow({
   name,
   description,
 }) {
+  if (!id) {
+    throw new Error(
+      "Workflow id is required"
+    );
+  }
+
+  if (!name?.trim()) {
+    throw new Error(
+      "Workflow name is required"
+    );
+  }
+
   const membership =
     await getUserOrganization();
 
@@ -438,16 +450,17 @@ export async function updateWorkflow({
 |--------------------------------------------------------------------------
 | Delete Workflow
 |--------------------------------------------------------------------------
-|
-| owner -> allowed
-| editor -> rejected
-| viewer -> rejected
-|
 */
 
 export async function deleteWorkflow(
   id
 ) {
+  if (!id) {
+    throw new Error(
+      "Workflow id is required"
+    );
+  }
+
   const membership =
     await getUserOrganization();
 
@@ -484,11 +497,6 @@ export async function deleteWorkflow(
 |--------------------------------------------------------------------------
 | Create Workflow Step
 |--------------------------------------------------------------------------
-|
-| owner  -> allowed
-| editor -> allowed
-| viewer -> rejected
-|
 */
 
 export async function createWorkflowStep({
@@ -498,6 +506,24 @@ export async function createWorkflowStep({
   type,
   config,
 }) {
+  if (!workflowId) {
+    throw new Error(
+      "workflowId is required"
+    );
+  }
+
+  if (!name?.trim()) {
+    throw new Error(
+      "Step name is required"
+    );
+  }
+
+  if (!type) {
+    throw new Error(
+      "Step type is required"
+    );
+  }
+
   const membership =
     await getUserOrganization();
 
@@ -553,11 +579,6 @@ export async function createWorkflowStep({
 |--------------------------------------------------------------------------
 | Update Workflow Step
 |--------------------------------------------------------------------------
-|
-| owner  -> allowed
-| editor -> allowed
-| viewer -> rejected
-|
 */
 
 export async function updateWorkflowStep({
@@ -567,6 +588,24 @@ export async function updateWorkflowStep({
   type,
   config,
 }) {
+  if (!id) {
+    throw new Error(
+      "Step id is required"
+    );
+  }
+
+  if (!name?.trim()) {
+    throw new Error(
+      "Step name is required"
+    );
+  }
+
+  if (!type) {
+    throw new Error(
+      "Step type is required"
+    );
+  }
+
   const membership =
     await getUserOrganization();
 
@@ -625,16 +664,17 @@ export async function updateWorkflowStep({
 |--------------------------------------------------------------------------
 | Delete Workflow Step
 |--------------------------------------------------------------------------
-|
-| owner  -> allowed
-| editor -> allowed
-| viewer -> rejected
-|
 */
 
 export async function deleteWorkflowStep(
   id
 ) {
+  if (!id) {
+    throw new Error(
+      "Step id is required"
+    );
+  }
+
   const membership =
     await getUserOrganization();
 
@@ -669,7 +709,7 @@ export async function deleteWorkflowStep(
 
 /*
 |--------------------------------------------------------------------------
-| Reorder Workflow Step
+| Reorder One Workflow Step
 |--------------------------------------------------------------------------
 */
 
@@ -677,6 +717,12 @@ export async function reorderWorkflowStep({
   id,
   stepOrder,
 }) {
+  if (!id) {
+    throw new Error(
+      "Step id is required"
+    );
+  }
+
   const membership =
     await getUserOrganization();
 
@@ -727,13 +773,15 @@ export async function reorderWorkflowStep({
 | Reorder Multiple Workflow Steps
 |--------------------------------------------------------------------------
 |
-| steps:
+| IMPORTANT:
 |
-| [
-|   { id: "uuid1", stepOrder: 1 },
-|   { id: "uuid2", stepOrder: 2 },
-|   { id: "uuid3", stepOrder: 3 }
-| ]
+| Accepts either:
+|
+| { id, stepOrder }
+|
+| or:
+|
+| { id, step_order }
 |
 */
 
@@ -764,6 +812,11 @@ export async function reorderWorkflowSteps(
     (step, index) => {
       const variableName =
         `step${index}`;
+
+      const order =
+        step.stepOrder ??
+        step.step_order ??
+        index + 1;
 
       mutations.push(`
         ${variableName}: update_workflow_steps_by_pk(
@@ -798,9 +851,7 @@ export async function reorderWorkflowSteps(
 
       variables[
         `${variableName}Order`
-      ] =
-        step.stepOrder ??
-        index + 1;
+      ] = order;
     }
   );
 
@@ -829,20 +880,32 @@ export async function reorderWorkflowSteps(
 |--------------------------------------------------------------------------
 | Trigger Workflow Run
 |--------------------------------------------------------------------------
-|
-| owner/editor/viewer permissions are
-| enforced by Hasura Action configuration.
-|
 */
 
 export async function triggerWorkflowRun(
   workflowId
 ) {
+  if (!workflowId) {
+    throw new Error(
+      "workflowId is required"
+    );
+  }
+
   const membership =
     await getUserOrganization();
 
   const role =
     membership.role;
+
+  console.log(
+    "TRIGGER WORKFLOW ROLE:",
+    role
+  );
+
+  console.log(
+    "TRIGGER WORKFLOW:",
+    workflowId
+  );
 
   const data =
     await request(
@@ -871,6 +934,11 @@ export async function triggerWorkflowRun(
   const result =
     data?.triggerWorkflowRun;
 
+  console.log(
+    "TRIGGER WORKFLOW RESPONSE:",
+    result
+  );
+
   if (!result?.success) {
     throw new Error(
       result?.message ||
@@ -887,29 +955,59 @@ export async function triggerWorkflowRun(
 | Approve Approval Gate
 |--------------------------------------------------------------------------
 |
-| owner  -> allowed
-| editor -> allowed
-| viewer -> rejected
+| Hasura Action input:
+|
+| {
+|   "step_run_id": "uuid"
+| }
+|
+| Therefore this MUST use:
+|
+| approveStep(
+|   step_run_id: $stepRunId
+| )
+|
+| NOT:
+|
+| approveStep(
+|   step_id: $stepId
+| )
 |
 */
 
 export async function approveStep(
   stepRunId
 ) {
+  if (!stepRunId) {
+    throw new Error(
+      "stepRunId is required"
+    );
+  }
+
   const membership =
     await getUserOrganization();
 
   const role =
     membership.role;
 
+  console.log(
+    "APPROVE STEP ROLE:",
+    role
+  );
+
+  console.log(
+    "APPROVING STEP RUN:",
+    stepRunId
+  );
+
   const data =
     await request(
       `
         mutation ApproveStep(
-          $stepId: uuid!
+          $stepRunId: uuid!
         ) {
           approveStep(
-            step_id: $stepId
+            step_run_id: $stepRunId
           ) {
             success
             message
@@ -917,10 +1015,15 @@ export async function approveStep(
         }
       `,
       {
-        stepId: stepRunId,
+        stepRunId,
       },
       role
     );
+
+  console.log(
+    "APPROVE STEP GRAPHQL DATA:",
+    data
+  );
 
   const result =
     data?.approveStep;
@@ -941,20 +1044,55 @@ export async function approveStep(
 | Get Workflow Run
 |--------------------------------------------------------------------------
 |
-| owner  -> SELECT
-| editor -> SELECT
-| viewer -> SELECT
+| IMPORTANT:
+|
+| Your step_runs table DOES NOT have created_at.
+|
+| Therefore DO NOT use:
+|
+| order_by: {
+|   created_at: asc
+| }
+|
+| Current step_runs columns:
+|
+| id
+| workflow_run_id
+| workflow_step_id
+| status
+| input
+| output
+| error
+| attempt_count
+| approved_by
+| approved_at
 |
 */
 
 export async function getWorkflowRun(
   runId
 ) {
+  if (!runId) {
+    throw new Error(
+      "runId is required"
+    );
+  }
+
   const membership =
     await getUserOrganization();
 
   const role =
     membership.role;
+
+  console.log(
+    "GET WORKFLOW RUN ROLE:",
+    role
+  );
+
+  console.log(
+    "GET WORKFLOW RUN:",
+    runId
+  );
 
   const data =
     await request(
@@ -968,6 +1106,8 @@ export async function getWorkflowRun(
             id
             workflow_id
             status
+            started_at
+            completed_at
             error
           }
 
@@ -996,6 +1136,11 @@ export async function getWorkflowRun(
       },
       role
     );
+
+  console.log(
+    "WORKFLOW RUN DATA:",
+    data
+  );
 
   return {
     run:

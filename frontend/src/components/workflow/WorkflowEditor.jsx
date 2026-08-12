@@ -5,8 +5,10 @@ import {
 } from "react";
 
 import {
+  approveStep,
   deleteWorkflowStep,
   getCurrentUserRole,
+  getWorkflowRun,
   reorderWorkflowSteps,
   triggerWorkflowRun,
 } from "../../lib/graphql";
@@ -34,9 +36,12 @@ function WorkflowEditor({
 
   const [steps, setSteps] = useState(
     () =>
-      [...(workflow?.workflow_steps || [])].sort(
+      [
+        ...(workflow?.workflow_steps || []),
+      ].sort(
         (a, b) =>
-          a.step_order - b.step_order
+          a.step_order -
+          b.step_order
       )
   );
 
@@ -86,6 +91,28 @@ function WorkflowEditor({
 
 
   // ==========================================================
+  // WORKFLOW RUN DETAILS
+  // ==========================================================
+
+  const [runDetails, setRunDetails] =
+    useState(null);
+
+  const [runLoading, setRunLoading] =
+    useState(false);
+
+
+  // ==========================================================
+  // APPROVAL STATE
+  // ==========================================================
+
+  const [approvingStepRunId, setApprovingStepRunId] =
+    useState(null);
+
+  const [approvalError, setApprovalError] =
+    useState("");
+
+
+  // ==========================================================
   // UPDATE STEPS WHEN WORKFLOW CHANGES
   // ==========================================================
 
@@ -96,9 +123,12 @@ function WorkflowEditor({
     }
 
     setSteps(
-      [...(workflow.workflow_steps || [])].sort(
+      [
+        ...(workflow.workflow_steps || []),
+      ].sort(
         (a, b) =>
-          a.step_order - b.step_order
+          a.step_order -
+          b.step_order
       )
     );
 
@@ -149,7 +179,9 @@ function WorkflowEditor({
 
         if (mounted) {
 
-          setRole("viewer");
+          setRole(
+            "viewer"
+          );
 
 
           setError(
@@ -219,6 +251,172 @@ function WorkflowEditor({
 
 
   // ==========================================================
+  // GET STEP RUN FOR WORKFLOW STEP
+  // ==========================================================
+
+  const getStepRunForStep = (
+    stepId
+  ) => {
+
+    if (!runDetails?.stepRuns) {
+      return null;
+    }
+
+
+    return (
+      runDetails.stepRuns.find(
+        (stepRun) =>
+          stepRun.workflow_step_id ===
+          stepId
+      ) || null
+    );
+
+  };
+
+
+  // ==========================================================
+  // REFRESH WORKFLOW RUN
+  // ==========================================================
+
+  const refreshWorkflowRun = async (
+    runId
+  ) => {
+
+    if (!runId) {
+      return;
+    }
+
+
+    try {
+
+      setRunLoading(true);
+
+
+      const details =
+        await getWorkflowRun(
+          runId
+        );
+
+
+      console.log(
+        "Workflow run details:",
+        details
+      );
+
+
+      setRunDetails(
+        details
+      );
+
+    } catch (err) {
+
+      console.error(
+        "Failed to get workflow run:",
+        err
+      );
+
+
+      setRunError(
+        err?.message ||
+          "Could not load workflow run"
+      );
+
+    } finally {
+
+      setRunLoading(false);
+
+    }
+
+  };
+
+
+  // ==========================================================
+  // POLL WORKFLOW RUN
+  // ==========================================================
+
+  useEffect(() => {
+
+    const runId =
+      runResult?.run_id;
+
+
+    if (!runId) {
+      return;
+    }
+
+
+    let mounted = true;
+
+
+    // Load immediately
+
+    refreshWorkflowRun(
+      runId
+    );
+
+
+    const interval =
+      setInterval(
+        async () => {
+
+          if (!mounted) {
+            return;
+          }
+
+
+          try {
+
+            const details =
+              await getWorkflowRun(
+                runId
+              );
+
+
+            if (!mounted) {
+              return;
+            }
+
+
+            setRunDetails(
+              details
+            );
+
+
+            console.log(
+              "Workflow run updated:",
+              details
+            );
+
+          } catch (err) {
+
+            console.error(
+              "Failed to refresh workflow run:",
+              err
+            );
+
+          }
+
+        },
+        2000
+      );
+
+
+    return () => {
+
+      mounted = false;
+
+      clearInterval(
+        interval
+      );
+
+    };
+
+  }, [
+    runResult?.run_id,
+  ]);
+
+
+  // ==========================================================
   // CREATE STEP
   // ==========================================================
 
@@ -237,9 +435,13 @@ function WorkflowEditor({
     );
 
 
-    setShowStepForm(false);
+    setShowStepForm(
+      false
+    );
 
-    setEditingStep(null);
+    setEditingStep(
+      null
+    );
 
   };
 
@@ -267,9 +469,13 @@ function WorkflowEditor({
     );
 
 
-    setEditingStep(null);
+    setEditingStep(
+      null
+    );
 
-    setShowStepForm(false);
+    setShowStepForm(
+      false
+    );
 
   };
 
@@ -284,9 +490,13 @@ function WorkflowEditor({
 
     setError("");
 
-    setEditingStep(step);
+    setEditingStep(
+      step
+    );
 
-    setShowStepForm(false);
+    setShowStepForm(
+      false
+    );
 
   };
 
@@ -297,9 +507,13 @@ function WorkflowEditor({
 
   const handleCancelForm = () => {
 
-    setEditingStep(null);
+    setEditingStep(
+      null
+    );
 
-    setShowStepForm(false);
+    setShowStepForm(
+      false
+    );
 
     setError("");
 
@@ -339,7 +553,8 @@ function WorkflowEditor({
         sortedSteps
           .filter(
             (item) =>
-              item.id !== step.id
+              item.id !==
+              step.id
           )
           .map(
             (item, index) => ({
@@ -355,10 +570,9 @@ function WorkflowEditor({
       );
 
 
-      // Persist the new ordering
-
       if (
-        remainingSteps.length > 0
+        remainingSteps.length >
+        0
       ) {
 
         await reorderWorkflowSteps(
@@ -396,7 +610,8 @@ function WorkflowEditor({
     const index =
       sortedSteps.findIndex(
         (item) =>
-          item.id === step.id
+          item.id ===
+          step.id
       );
 
 
@@ -478,7 +693,8 @@ function WorkflowEditor({
     const index =
       sortedSteps.findIndex(
         (item) =>
-          item.id === step.id
+          item.id ===
+          step.id
       );
 
 
@@ -559,80 +775,195 @@ function WorkflowEditor({
   // RUN WORKFLOW
   // ==========================================================
 
-  const handleRunWorkflow = async () => {
+  const handleRunWorkflow =
+    async () => {
 
-    if (!workflow?.id) {
+      if (!workflow?.id) {
 
-      setRunError(
-        "Workflow ID is missing."
-      );
+        setRunError(
+          "Workflow ID is missing."
+        );
 
-      return;
+        return;
 
-    }
-
-
-    if (sortedSteps.length === 0) {
-
-      setRunError(
-        "Add at least one workflow step before running."
-      );
-
-      return;
-
-    }
+      }
 
 
-    try {
+      if (
+        sortedSteps.length ===
+        0
+      ) {
 
-      setRunningWorkflow(true);
+        setRunError(
+          "Add at least one workflow step before running."
+        );
 
-      setRunError("");
+        return;
 
-      setRunResult(null);
-
-
-      console.log(
-        "Starting workflow:",
-        workflow.id
-      );
+      }
 
 
-      const result =
-        await triggerWorkflowRun(
+      try {
+
+        setRunningWorkflow(
+          true
+        );
+
+        setRunError("");
+
+        setApprovalError("");
+
+        setRunResult(
+          null
+        );
+
+        setRunDetails(
+          null
+        );
+
+
+        console.log(
+          "Starting workflow:",
           workflow.id
         );
 
 
-      console.log(
-        "Workflow run started:",
-        result
-      );
+        const result =
+          await triggerWorkflowRun(
+            workflow.id
+          );
 
 
-      setRunResult(result);
+        console.log(
+          "Workflow run started:",
+          result
+        );
 
 
-    } catch (err) {
-
-      console.error(
-        "Failed to run workflow:",
-        err
-      );
+        setRunResult(
+          result
+        );
 
 
-      setRunError(
-        err?.message ||
-          "Failed to run workflow"
-      );
+      } catch (err) {
 
-    } finally {
+        console.error(
+          "Failed to run workflow:",
+          err
+        );
 
-      setRunningWorkflow(false);
 
-    }
+        setRunError(
+          err?.message ||
+            "Failed to run workflow"
+        );
 
-  };
+      } finally {
+
+        setRunningWorkflow(
+          false
+        );
+
+      }
+
+    };
+
+
+  // ==========================================================
+  // APPROVE PAUSED STEP
+  // ==========================================================
+
+  const handleApproveStep =
+    async (
+      stepRun
+    ) => {
+
+      if (!stepRun?.id) {
+
+        setApprovalError(
+          "Step run ID is missing."
+        );
+
+        return;
+
+      }
+
+
+      if (
+        stepRun.status !==
+        "paused"
+      ) {
+
+        setApprovalError(
+          "This step is no longer waiting for approval."
+        );
+
+        return;
+
+      }
+
+
+      try {
+
+        setApprovingStepRunId(
+          stepRun.id
+        );
+
+        setApprovalError("");
+
+
+        console.log(
+          "Approving step run:",
+          stepRun.id
+        );
+
+
+        const result =
+          await approveStep(
+            stepRun.id
+          );
+
+
+        console.log(
+          "Approval result:",
+          result
+        );
+
+
+        // Immediately refresh
+
+        if (
+          runResult?.run_id
+        ) {
+
+          await refreshWorkflowRun(
+            runResult.run_id
+          );
+
+        }
+
+      } catch (err) {
+
+        console.error(
+          "Failed to approve workflow step:",
+          err
+        );
+
+
+        setApprovalError(
+          err?.message ||
+            "Could not approve workflow step"
+        );
+
+      } finally {
+
+        setApprovingStepRunId(
+          null
+        );
+
+      }
+
+    };
 
 
   // ==========================================================
@@ -770,6 +1101,19 @@ function WorkflowEditor({
 
 
       {/* ==================================================== */}
+      {/* APPROVAL ERROR */}
+      {/* ==================================================== */}
+
+      {approvalError && (
+
+        <p className="error">
+          {approvalError}
+        </p>
+
+      )}
+
+
+      {/* ==================================================== */}
       {/* RUN RESULT */}
       {/* ==================================================== */}
 
@@ -788,8 +1132,11 @@ function WorkflowEditor({
             <strong>
               Status:
             </strong>{" "}
-            {runResult.status ||
+
+            {runDetails?.run?.status ||
+              runResult.status ||
               "Started"}
+
           </p>
 
 
@@ -799,7 +1146,9 @@ function WorkflowEditor({
               <strong>
                 Run ID:
               </strong>{" "}
+
               {runResult.run_id}
+
             </p>
 
           )}
@@ -809,6 +1158,15 @@ function WorkflowEditor({
 
             <p>
               {runResult.message}
+            </p>
+
+          )}
+
+
+          {runLoading && (
+
+            <p>
+              Refreshing workflow status...
             </p>
 
           )}
@@ -864,7 +1222,8 @@ function WorkflowEditor({
       {/* STEPS */}
       {/* ==================================================== */}
 
-      {sortedSteps.length === 0 ? (
+      {sortedSteps.length ===
+      0 ? (
 
         <p>
           No steps added yet.
@@ -875,163 +1234,367 @@ function WorkflowEditor({
         <div className="workflow-steps">
 
           {sortedSteps.map(
-            (step, index) => (
+            (
+              step,
+              index
+            ) => {
 
-              <div
-                key={step.id}
-                className="workflow-step-card"
-              >
-
-
-                {/* ========================================== */}
-                {/* STEP HEADER */}
-                {/* ========================================== */}
-
-                <div className="workflow-step-header">
-
-                  <div>
-
-                    <h4>
-                      Step{" "}
-                      {step.step_order}
-                      :{" "}
-                      {step.name}
-                    </h4>
+              const stepRun =
+                getStepRunForStep(
+                  step.id
+                );
 
 
-                    <span>
-                      {
-                        STEP_LABELS[
+              const isApprovalGate =
+                step.type ===
+                "approval_gate";
+
+
+              const isPaused =
+                stepRun?.status ===
+                "paused";
+
+
+              const waitingForApproval =
+                isApprovalGate &&
+                isPaused;
+
+
+              return (
+
+                <div
+                  key={step.id}
+                  className="workflow-step-card"
+                >
+
+
+                  {/* ====================================== */}
+                  {/* STEP HEADER */}
+                  {/* ====================================== */}
+
+                  <div className="workflow-step-header">
+
+                    <div>
+
+                      <h4>
+                        Step{" "}
+                        {step.step_order}
+                        :{" "}
+                        {step.name}
+                      </h4>
+
+
+                      <span>
+                        {
+                          STEP_LABELS[
+                            step.type
+                          ] ||
                           step.type
-                        ] ||
-                        step.type
-                      }
-                    </span>
-
-                  </div>
-
-
-                  {/* ======================================== */}
-                  {/* ACTIONS */}
-                  {/* ======================================== */}
-
-                  <div className="workflow-step-actions">
-
-
-                    {canEdit && (
-
-                      <>
-
-                        {/* MOVE UP */}
-
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleMoveUp(
-                              step
-                            )
-                          }
-                          disabled={
-                            index ===
-                            0
-                          }
-                          title="Move up"
-                        >
-                          ↑
-                        </button>
-
-
-                        {/* MOVE DOWN */}
-
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleMoveDown(
-                              step
-                            )
-                          }
-                          disabled={
-                            index ===
-                            sortedSteps.length -
-                              1
-                          }
-                          title="Move down"
-                        >
-                          ↓
-                        </button>
-
-
-                        {/* EDIT */}
-
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleEdit(
-                              step
-                            )
-                          }
-                        >
-                          ✏️ Edit
-                        </button>
-
-                      </>
-
-                    )}
-
-
-                    {/* ====================================== */}
-                    {/* DELETE */}
-                    {/* ====================================== */}
-
-                    {canDelete && (
-
-                      <button
-                        type="button"
-                        onClick={() =>
-                          handleDelete(
-                            step
-                          )
                         }
-                      >
-                        🗑️ Delete
-                      </button>
+                      </span>
 
-                    )}
+                    </div>
+
+
+                    {/* ==================================== */}
+                    {/* ACTIONS */}
+                    {/* ==================================== */}
+
+                    <div className="workflow-step-actions">
+
+
+                      {canEdit && (
+
+                        <>
+
+                          {/* MOVE UP */}
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleMoveUp(
+                                step
+                              )
+                            }
+                            disabled={
+                              index ===
+                              0
+                            }
+                            title="Move up"
+                          >
+                            ↑
+                          </button>
+
+
+                          {/* MOVE DOWN */}
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleMoveDown(
+                                step
+                              )
+                            }
+                            disabled={
+                              index ===
+                              sortedSteps.length -
+                                1
+                            }
+                            title="Move down"
+                          >
+                            ↓
+                          </button>
+
+
+                          {/* EDIT */}
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleEdit(
+                                step
+                              )
+                            }
+                          >
+                            ✏️ Edit
+                          </button>
+
+                        </>
+
+                      )}
+
+
+                      {/* DELETE */}
+
+                      {canDelete && (
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleDelete(
+                              step
+                            )
+                          }
+                        >
+                          🗑️ Delete
+                        </button>
+
+                      )}
+
+                    </div>
 
                   </div>
+
+
+                  {/* ====================================== */}
+                  {/* TYPE */}
+                  {/* ====================================== */}
+
+                  <p>
+                    Type:{" "}
+                    {STEP_LABELS[
+                      step.type
+                    ] ||
+                      step.type}
+                  </p>
+
+
+                  {/* ====================================== */}
+                  {/* STEP RUN STATUS */}
+                  {/* ====================================== */}
+
+                  {stepRun && (
+
+                    <div
+                      className="workflow-step-run-status"
+                      style={{
+                        margin:
+                          "10px 0",
+                        padding:
+                          "10px",
+                        border:
+                          "1px solid #444",
+                        borderRadius:
+                          "8px",
+                      }}
+                    >
+
+                      <p>
+
+                        <strong>
+                          Run Status:
+                        </strong>{" "}
+
+                        {stepRun.status}
+
+                      </p>
+
+
+                      {stepRun.attempt_count !==
+                        undefined && (
+
+                        <p>
+
+                          <strong>
+                            Attempts:
+                          </strong>{" "}
+
+                          {
+                            stepRun.attempt_count
+                          }
+
+                        </p>
+
+                      )}
+
+
+                      {/* ================================= */}
+                      {/* APPROVAL GATE */}
+                      {/* ================================= */}
+
+                      {waitingForApproval && (
+
+                        <div
+                          className="approval-gate"
+                          style={{
+                            marginTop:
+                              "12px",
+                            padding:
+                              "12px",
+                            border:
+                              "1px solid #c084fc",
+                            borderRadius:
+                              "8px",
+                          }}
+                        >
+
+                          <p>
+                            <strong>
+                              ⏸ Waiting for approval
+                            </strong>
+                          </p>
+
+
+                          {stepRun.output
+                            ?.message && (
+
+                            <p>
+                              {
+                                stepRun
+                                  .output
+                                  .message
+                              }
+                            </p>
+
+                          )}
+
+
+                          {canEdit ? (
+
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleApproveStep(
+                                  stepRun
+                                )
+                              }
+                              disabled={
+                                approvingStepRunId ===
+                                stepRun.id
+                              }
+                            >
+
+                              {approvingStepRunId ===
+                              stepRun.id
+                                ? "Approving..."
+                                : "✅ Approve"}
+
+                            </button>
+
+                          ) : (
+
+                            <p>
+                              You do not have permission to approve this step.
+                            </p>
+
+                          )}
+
+                        </div>
+
+                      )}
+
+
+                      {/* ================================= */}
+                      {/* STEP OUTPUT */}
+                      {/* ================================= */}
+
+                      {stepRun.output && (
+
+                        <details
+                          style={{
+                            marginTop:
+                              "10px",
+                          }}
+                        >
+
+                          <summary>
+                            Step output
+                          </summary>
+
+                          <pre>
+                            {JSON.stringify(
+                              stepRun.output,
+                              null,
+                              2
+                            )}
+                          </pre>
+
+                        </details>
+
+                      )}
+
+
+                      {/* ================================= */}
+                      {/* STEP ERROR */}
+                      {/* ================================= */}
+
+                      {stepRun.error && (
+
+                        <p className="error">
+
+                          <strong>
+                            Error:
+                          </strong>{" "}
+
+                          {stepRun.error}
+
+                        </p>
+
+                      )}
+
+                    </div>
+
+                  )}
+
+
+                  {/* ====================================== */}
+                  {/* CONFIG */}
+                  {/* ====================================== */}
+
+                  <pre>
+                    {JSON.stringify(
+                      step.config,
+                      null,
+                      2
+                    )}
+                  </pre>
+
 
                 </div>
 
+              );
 
-                {/* ========================================== */}
-                {/* TYPE */}
-                {/* ========================================== */}
-
-                <p>
-                  Type:{" "}
-                  {STEP_LABELS[
-                    step.type
-                  ] ||
-                    step.type}
-                </p>
-
-
-                {/* ========================================== */}
-                {/* CONFIG */}
-                {/* ========================================== */}
-
-                <pre>
-                  {JSON.stringify(
-                    step.config,
-                    null,
-                    2
-                  )}
-                </pre>
-
-
-              </div>
-
-            )
+            }
           )}
 
         </div>
