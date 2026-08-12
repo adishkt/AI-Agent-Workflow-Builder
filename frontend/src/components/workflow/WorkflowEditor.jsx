@@ -1,396 +1,879 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import WorkflowStepForm from "./WorkflowStepForm";
 import {
-  approveStep,
-  getWorkflowRun,
-  triggerWorkflowRun,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
+
+import {
+  deleteWorkflowStep,
+  getCurrentUserRole,
+  reorderWorkflowSteps,
 } from "../../lib/graphql";
 
-const TYPE_LABELS = {
+import WorkflowStepForm from "./WorkflowStepForm";
+
+
+const STEP_LABELS = {
   llm: "LLM",
-  approval_gate: "Approval Gate",
-  conditional_branch: "Conditional Branch",
   http_request: "HTTP Request",
   db_write: "Database Write",
+  conditional_branch: "Conditional Branch",
+  approval_gate: "Approval Gate",
 };
 
-const STATUS_LABELS = {
-  pending: "Pending",
-  running: "Running",
-  paused: "Waiting for approval",
-  completed: "Completed",
-  failed: "Failed",
-};
 
-function statusClass(status) {
-  return `status-pill status-${status || "unknown"}`;
-}
+function WorkflowEditor({
+  workflow,
+  onBack,
+}) {
 
-function formatOutput(output) {
-  if (output === null || output === undefined || output === "") {
-    return "No output yet";
+  // ==========================================================
+  // SAFETY CHECK
+  // ==========================================================
+
+  if (!workflow) {
+    return (
+      <section className="workflow-editor">
+        <p>Loading workflow...</p>
+      </section>
+    );
   }
 
-  if (typeof output === "string") {
-    return output;
-  }
 
-  return JSON.stringify(output, null, 2);
-}
+  // ==========================================================
+  // STEPS
+  // ==========================================================
 
-function WorkflowEditor({ workflow, onBack }) {
   const [steps, setSteps] = useState(
     [...(workflow.workflow_steps || [])].sort(
-      (a, b) => a.step_order - b.step_order
+      (a, b) =>
+        a.step_order - b.step_order
     )
   );
 
-  const [showStepForm, setShowStepForm] = useState(false);
-  const [runId, setRunId] = useState(null);
-  const [run, setRun] = useState(null);
-  const [stepRuns, setStepRuns] = useState([]);
-  const [running, setRunning] = useState(false);
-  const [approving, setApproving] = useState(null);
-  const [runError, setRunError] = useState("");
 
-  const loadRun = useCallback(async (id) => {
-    if (!id) return;
+  // ==========================================================
+  // FORM STATE
+  // ==========================================================
 
-    try {
-      const result = await getWorkflowRun(id);
-      setRun(result.run);
-      setStepRuns(result.stepRuns || []);
-      return result;
-    } catch (error) {
-      console.error("Failed to load workflow run:", error);
-      setRunError(error.message || "Could not load workflow run");
-      return null;
-    }
-  }, []);
+  const [showStepForm, setShowStepForm] =
+    useState(false);
+
+  const [editingStep, setEditingStep] =
+    useState(null);
+
+
+  // ==========================================================
+  // ERROR
+  // ==========================================================
+
+  const [error, setError] =
+    useState("");
+
+
+  // ==========================================================
+  // ROLE
+  // ==========================================================
+
+  const [role, setRole] =
+    useState("loading");
+
+
+  const [roleLoading, setRoleLoading] =
+    useState(true);
+
+
+  // ==========================================================
+  // LOAD ROLE
+  // ==========================================================
 
   useEffect(() => {
-    if (!runId) return undefined;
 
-    let cancelled = false;
+    let mounted = true;
 
-    const poll = async () => {
-      const result = await loadRun(runId);
-      if (cancelled || !result?.run) return;
 
-      const status = result.run.status;
-      if (status !== "running" && status !== "paused") {
-        return;
+    async function loadRole() {
+
+      try {
+
+        setRoleLoading(true);
+
+        const currentRole =
+          await getCurrentUserRole();
+
+        console.log(
+          "WorkflowEditor role:",
+          currentRole
+        );
+
+
+        if (mounted) {
+
+          setRole(
+            currentRole
+          );
+
+        }
+
+      } catch (err) {
+
+        console.error(
+          "Failed to get user role:",
+          err
+        );
+
+
+        if (mounted) {
+
+          setRole("viewer");
+
+          setError(
+            err?.message ||
+              "Could not determine user role"
+          );
+
+        }
+
+      } finally {
+
+        if (mounted) {
+
+          setRoleLoading(false);
+
+        }
+
       }
-    };
 
-    poll();
-    const interval = window.setInterval(async () => {
-      if (cancelled) return;
+    }
 
-      const result = await loadRun(runId);
-      if (!result?.run) return;
 
-      if (
-        result.run.status !== "running" &&
-        result.run.status !== "paused"
-      ) {
-        window.clearInterval(interval);
-      }
-    }, 2000);
+    loadRole();
+
 
     return () => {
-      cancelled = true;
-      window.clearInterval(interval);
+
+      mounted = false;
+
     };
-  }, [runId, loadRun]);
 
-  const handleStepCreated = (step) => {
-    setSteps((currentSteps) =>
-      [...currentSteps, step].sort(
-        (a, b) => a.step_order - b.step_order
-      )
-    );
-    setShowStepForm(false);
-  };
+  }, []);
 
-  const handleRun = async () => {
-    try {
-      setRunning(true);
-      setRunError("");
-      setRun(null);
-      setStepRuns([]);
 
-      const result = await triggerWorkflowRun(workflow.id);
-      setRunId(result.run_id);
-      await loadRun(result.run_id);
-    } catch (error) {
-      console.error("Failed to start workflow:", error);
-      setRunError(error.message || "Could not start workflow");
-    } finally {
-      setRunning(false);
-    }
-  };
+  // ==========================================================
+  // PERMISSIONS
+  // ==========================================================
 
-  const handleApprove = async (stepRunId) => {
-    try {
-      setApproving(stepRunId);
-      setRunError("");
+  const canEdit =
+    role === "owner" ||
+    role === "editor";
 
-      await approveStep(stepRunId);
-      await loadRun(runId);
-    } catch (error) {
-      console.error("Failed to approve step:", error);
-      setRunError(error.message || "Could not approve step");
-    } finally {
-      setApproving(null);
-    }
-  };
 
-  const stepRunByStepId = useMemo(() => {
-    const map = new Map();
+  const canDelete =
+    role === "owner";
 
-    for (const stepRun of stepRuns) {
-      map.set(stepRun.workflow_step_id, stepRun);
-    }
 
-    return map;
-  }, [stepRuns]);
+  // ==========================================================
+  // SORT STEPS
+  // ==========================================================
 
-  const activeApproval = stepRuns.find(
-    (item) => item.status === "paused"
+  const sortedSteps = useMemo(
+    () =>
+      [...steps].sort(
+        (a, b) =>
+          a.step_order -
+          b.step_order
+      ),
+    [steps]
   );
+
+
+  // ==========================================================
+  // CREATE / UPDATE STEP
+  // ==========================================================
+
+  const handleStepCreated = (
+    step
+  ) => {
+
+    setError("");
+
+
+    setSteps(
+      (currentSteps) => [
+        ...currentSteps,
+        step,
+      ]
+    );
+
+
+    setShowStepForm(false);
+
+    setEditingStep(null);
+
+  };
+
+
+  const handleStepUpdated = (
+    updatedStep
+  ) => {
+
+    setError("");
+
+
+    setSteps(
+      (currentSteps) =>
+        currentSteps.map(
+          (step) =>
+            step.id ===
+            updatedStep.id
+              ? updatedStep
+              : step
+        )
+    );
+
+
+    setEditingStep(null);
+
+    setShowStepForm(false);
+
+  };
+
+
+  // ==========================================================
+  // EDIT
+  // ==========================================================
+
+  const handleEdit = (
+    step
+  ) => {
+
+    setError("");
+
+    setEditingStep(step);
+
+    setShowStepForm(false);
+
+  };
+
+
+  // ==========================================================
+  // CANCEL FORM
+  // ==========================================================
+
+  const handleCancelForm = () => {
+
+    setEditingStep(null);
+
+    setShowStepForm(false);
+
+    setError("");
+
+  };
+
+
+  // ==========================================================
+  // DELETE
+  // ==========================================================
+
+  const handleDelete = async (
+    step
+  ) => {
+
+    const confirmed =
+      window.confirm(
+        `Delete "${step.name}"?`
+      );
+
+
+    if (!confirmed) {
+      return;
+    }
+
+
+    try {
+
+      setError("");
+
+
+      await deleteWorkflowStep(
+        step.id
+      );
+
+
+      // Remove deleted step
+      // and renumber locally
+
+      const remainingSteps =
+        sortedSteps
+          .filter(
+            (item) =>
+              item.id !== step.id
+          )
+          .map(
+            (item, index) => ({
+              ...item,
+              step_order:
+                index + 1,
+            })
+          );
+
+
+      setSteps(
+        remainingSteps
+      );
+
+
+      // Persist new ordering
+      // to Hasura
+
+      if (
+        remainingSteps.length > 0
+      ) {
+
+        await reorderWorkflowSteps(
+          remainingSteps
+        );
+
+      }
+
+    } catch (err) {
+
+      console.error(
+        "Failed to delete workflow step:",
+        err
+      );
+
+
+      setError(
+        err?.message ||
+          "Could not delete workflow step"
+      );
+
+    }
+
+  };
+
+
+  // ==========================================================
+  // MOVE UP
+  // ==========================================================
+
+  const handleMoveUp = async (
+    step
+  ) => {
+
+    const index =
+      sortedSteps.findIndex(
+        (item) =>
+          item.id === step.id
+      );
+
+
+    if (index <= 0) {
+      return;
+    }
+
+
+    const newSteps = [
+      ...sortedSteps,
+    ];
+
+
+    const previous =
+      newSteps[index - 1];
+
+
+    newSteps[index - 1] =
+      step;
+
+    newSteps[index] =
+      previous;
+
+
+    const reordered =
+      newSteps.map(
+        (item, index) => ({
+          ...item,
+          step_order:
+            index + 1,
+        })
+      );
+
+
+    try {
+
+      setError("");
+
+      setSteps(reordered);
+
+
+      await reorderWorkflowSteps(
+        reordered
+      );
+
+    } catch (err) {
+
+      console.error(
+        "Failed to reorder steps:",
+        err
+      );
+
+
+      setError(
+        err?.message ||
+          "Could not reorder workflow steps"
+      );
+
+
+      // Restore previous order
+
+      setSteps(
+        sortedSteps
+      );
+
+    }
+
+  };
+
+
+  // ==========================================================
+  // MOVE DOWN
+  // ==========================================================
+
+  const handleMoveDown = async (
+    step
+  ) => {
+
+    const index =
+      sortedSteps.findIndex(
+        (item) =>
+          item.id === step.id
+      );
+
+
+    if (
+      index === -1 ||
+      index >=
+        sortedSteps.length - 1
+    ) {
+
+      return;
+
+    }
+
+
+    const newSteps = [
+      ...sortedSteps,
+    ];
+
+
+    const next =
+      newSteps[index + 1];
+
+
+    newSteps[index + 1] =
+      step;
+
+    newSteps[index] =
+      next;
+
+
+    const reordered =
+      newSteps.map(
+        (item, index) => ({
+          ...item,
+          step_order:
+            index + 1,
+        })
+      );
+
+
+    try {
+
+      setError("");
+
+      setSteps(reordered);
+
+
+      await reorderWorkflowSteps(
+        reordered
+      );
+
+    } catch (err) {
+
+      console.error(
+        "Failed to reorder steps:",
+        err
+      );
+
+
+      setError(
+        err?.message ||
+          "Could not reorder workflow steps"
+      );
+
+
+      setSteps(
+        sortedSteps
+      );
+
+    }
+
+  };
+
+
+  // ==========================================================
+  // RENDER
+  // ==========================================================
 
   return (
     <section className="workflow-editor">
-      <div className="editor-toolbar">
-        <button onClick={onBack} className="secondary-button">
-          ← Back to Workflows
-        </button>
 
-        <button
-          onClick={handleRun}
-          disabled={running || steps.length === 0}
-        >
-          {running ? "Starting..." : "▶ Run Workflow"}
-        </button>
-      </div>
 
-      <div className="workflow-header panel">
+      {/* ==================================================== */}
+      {/* BACK */}
+      {/* ==================================================== */}
+
+      <button
+        type="button"
+        onClick={onBack}
+      >
+        ← Back to Workflows
+      </button>
+
+
+      {/* ==================================================== */}
+      {/* WORKFLOW HEADER */}
+      {/* ==================================================== */}
+
+      <div className="workflow-editor-header">
+
         <div>
-          <span className="eyebrow">WORKFLOW</span>
-          <h2>{workflow.name}</h2>
-          <p>{workflow.description || "No description"}</p>
+
+          <h2>
+            {workflow.name}
+          </h2>
+
+          <p>
+            {workflow.description ||
+              "No description"}
+          </p>
+
         </div>
 
-        {run && (
-          <div className="run-summary">
-            <span className={statusClass(run.status)}>
-              {STATUS_LABELS[run.status] || run.status}
-            </span>
-            <small>Run: {run.id}</small>
-          </div>
-        )}
+
+        <div>
+
+          <strong>
+            Role:{" "}
+            {roleLoading
+              ? "Loading..."
+              : role}
+          </strong>
+
+        </div>
+
       </div>
 
-      {runError && <p className="error run-error">{runError}</p>}
 
-      {activeApproval && (
-        <div className="approval-panel">
-          <div>
-            <span className="eyebrow">ACTION REQUIRED</span>
-            <h3>Workflow is waiting for approval</h3>
-            <p>
-              {activeApproval.output?.message ||
-                "Please approve this workflow before continuing."}
-            </p>
-          </div>
+      <hr />
+
+
+      {/* ==================================================== */}
+      {/* ERROR */}
+      {/* ==================================================== */}
+
+      {error && (
+
+        <p className="error">
+          {error}
+        </p>
+
+      )}
+
+
+      {/* ==================================================== */}
+      {/* STEP TITLE */}
+      {/* ==================================================== */}
+
+      <div className="workflow-editor-title">
+
+        <h3>
+          Workflow Steps
+        </h3>
+
+
+        {canEdit && !roleLoading && (
 
           <button
-            onClick={() => handleApprove(activeApproval.id)}
-            disabled={approving === activeApproval.id}
-          >
-            {approving === activeApproval.id ? "Approving..." : "Approve"}
-          </button>
-        </div>
-      )}
+            type="button"
+            onClick={() => {
 
-      <div className="section-heading">
-        <div>
-          <span className="eyebrow">PIPELINE</span>
-          <h3>Workflow Steps</h3>
-        </div>
-        <span className="step-count">{steps.length} steps</span>
+              setEditingStep(null);
+
+              setShowStepForm(true);
+
+              setError("");
+
+            }}
+          >
+            + Add Step
+          </button>
+
+        )}
+
       </div>
 
-      {steps.length === 0 ? (
-        <div className="empty-state">
-          <p>No steps added yet.</p>
-          <p>Add an LLM, approval gate, condition, or another supported step.</p>
-        </div>
+
+      {/* ==================================================== */}
+      {/* STEPS */}
+      {/* ==================================================== */}
+
+      {sortedSteps.length === 0 ? (
+
+        <p>
+          No steps added yet.
+        </p>
+
       ) : (
-        <div className="workflow-step-list">
-          {steps.map((step) => {
-            const stepRun = stepRunByStepId.get(step.id);
-            const conditionOutput =
-              stepRun?.output &&
-              step.type === "conditional_branch"
-                ? stepRun.output
-                : null;
 
-            const selected =
-              conditionOutput?.selected_step_id ||
-              (conditionOutput?.result
-                ? conditionOutput?.true_step_id
-                : conditionOutput?.false_step_id);
+        <div className="workflow-steps">
 
-            return (
-              <div key={step.id} className="workflow-step-card panel">
-                <div className="step-card-top">
-                  <div className="step-number">{step.step_order}</div>
+          {sortedSteps.map(
+            (step, index) => (
 
-                  <div className="step-main">
-                    <div className="step-title-row">
-                      <h4>{step.name}</h4>
-                      <span className="type-pill">
-                        {TYPE_LABELS[step.type] || step.type}
-                      </span>
-                    </div>
-                    <small className="step-id">{step.id}</small>
+              <div
+                key={step.id}
+                className="workflow-step-card"
+              >
+
+
+                {/* ========================================== */}
+                {/* HEADER */}
+                {/* ========================================== */}
+
+                <div className="workflow-step-header">
+
+                  <div>
+
+                    <h4>
+                      Step{" "}
+                      {step.step_order}
+                      :{" "}
+                      {step.name}
+                    </h4>
+
+
+                    <span>
+                      {
+                        STEP_LABELS[
+                          step.type
+                        ] ||
+                        step.type
+                      }
+                    </span>
+
                   </div>
 
-                  {stepRun && (
-                    <span className={statusClass(stepRun.status)}>
-                      {STATUS_LABELS[stepRun.status] || stepRun.status}
-                    </span>
-                  )}
+
+                  {/* ======================================== */}
+                  {/* ACTIONS */}
+                  {/* ======================================== */}
+
+                  <div className="workflow-step-actions">
+
+
+                    {canEdit && (
+
+                      <>
+
+                        {/* MOVE UP */}
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleMoveUp(
+                              step
+                            )
+                          }
+                          disabled={
+                            index === 0
+                          }
+                          title="Move up"
+                        >
+                          ↑
+                        </button>
+
+
+                        {/* MOVE DOWN */}
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleMoveDown(
+                              step
+                            )
+                          }
+                          disabled={
+                            index ===
+                            sortedSteps.length -
+                              1
+                          }
+                          title="Move down"
+                        >
+                          ↓
+                        </button>
+
+
+                        {/* EDIT */}
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleEdit(
+                              step
+                            )
+                          }
+                        >
+                          ✏️ Edit
+                        </button>
+
+                      </>
+
+                    )}
+
+
+                    {/* DELETE */}
+
+                    {canDelete && (
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleDelete(
+                            step
+                          )
+                        }
+                      >
+                        🗑️ Delete
+                      </button>
+
+                    )}
+
+                  </div>
+
                 </div>
 
-                {step.type === "approval_gate" && stepRun?.status === "paused" && (
-                  <div className="inline-approval">
-                    <strong>Approval required</strong>
-                    <span>
-                      {stepRun.output?.message ||
-                        step.config?.message ||
-                        "Please approve this step."}
-                    </span>
-                    <button
-                      onClick={() => handleApprove(stepRun.id)}
-                      disabled={approving === stepRun.id}
-                    >
-                      {approving === stepRun.id ? "Approving..." : "Approve"}
-                    </button>
-                  </div>
-                )}
 
-                {step.type === "conditional_branch" && stepRun?.output && (
-                  <div className="condition-result">
-                    <div className="condition-grid">
-                      <div>
-                        <span>Actual</span>
-                        <strong>{String(stepRun.output.actual ?? "undefined")}</strong>
-                      </div>
-                      <div>
-                        <span>Operator</span>
-                        <strong>{stepRun.output.operator}</strong>
-                      </div>
-                      <div>
-                        <span>Expected</span>
-                        <strong>{String(stepRun.output.expected ?? "")}</strong>
-                      </div>
-                      <div>
-                        <span>Result</span>
-                        <strong>
-                          {stepRun.output.result ? "TRUE" : "FALSE"}
-                        </strong>
-                      </div>
-                    </div>
+                {/* ========================================== */}
+                {/* CONFIG */}
+                {/* ========================================== */}
 
-                    <div className="selected-branch">
-                      Selected branch: <strong>{selected || "None"}</strong>
-                    </div>
-                  </div>
-                )}
+                <p>
+                  Type:{" "}
+                  {STEP_LABELS[
+                    step.type
+                  ] ||
+                    step.type}
+                </p>
 
-                {stepRun?.error && (
-                  <div className="step-error">
-                    <strong>Error</strong>
-                    <pre>{stepRun.error}</pre>
-                  </div>
-                )}
 
-                {stepRun?.output && step.type !== "conditional_branch" && (
-                  <details className="step-output">
-                    <summary>View output</summary>
-                    <pre>{formatOutput(stepRun.output)}</pre>
-                  </details>
-                )}
+                <pre>
+                  {JSON.stringify(
+                    step.config,
+                    null,
+                    2
+                  )}
+                </pre>
 
-                {!stepRun && (
-                  <details className="step-config">
-                    <summary>Configuration</summary>
-                    <pre>{JSON.stringify(step.config, null, 2)}</pre>
-                  </details>
-                )}
+
               </div>
-            );
-          })}
-        </div>
-      )}
 
-      {run && (
-        <div className="run-details panel">
-          <div className="section-heading compact">
-            <div>
-              <span className="eyebrow">EXECUTION</span>
-              <h3>Latest Run</h3>
-            </div>
-            <button
-              className="secondary-button"
-              onClick={() => loadRun(runId)}
-            >
-              Refresh
-            </button>
-          </div>
-
-          <div className="run-meta">
-            <span>
-              Status: <strong>{STATUS_LABELS[run.status] || run.status}</strong>
-            </span>
-            <span>
-              Step runs: <strong>{stepRuns.length}</strong>
-            </span>
-          </div>
-
-          {run.error && (
-            <div className="step-error">
-              <strong>Workflow error</strong>
-              <pre>{run.error}</pre>
-            </div>
+            )
           )}
+
         </div>
+
       )}
 
-      {showStepForm ? (
-        <WorkflowStepForm
-          workflowId={workflow.id}
-          nextStepOrder={
-            steps.length
-              ? Math.max(...steps.map((step) => step.step_order)) + 1
-              : 1
-          }
-          onCreated={handleStepCreated}
-          onCancel={() => setShowStepForm(false)}
-        />
-      ) : (
-        <button
-          className="add-step-button"
-          onClick={() => setShowStepForm(true)}
-        >
-          + Add Step
-        </button>
-      )}
+
+      {/* ==================================================== */}
+      {/* ADD STEP FORM */}
+      {/* ==================================================== */}
+
+      {showStepForm &&
+        canEdit &&
+        !editingStep && (
+
+          <WorkflowStepForm
+
+            workflowId={
+              workflow.id
+            }
+
+            nextStepOrder={
+              sortedSteps.length + 1
+            }
+
+            editingStep={null}
+
+            onCreated={
+              handleStepCreated
+            }
+
+            onUpdated={
+              handleStepUpdated
+            }
+
+            onCancel={
+              handleCancelForm
+            }
+
+          />
+
+        )}
+
+
+      {/* ==================================================== */}
+      {/* EDIT STEP FORM */}
+      {/* ==================================================== */}
+
+      {editingStep &&
+        canEdit && (
+
+          <WorkflowStepForm
+
+            workflowId={
+              workflow.id
+            }
+
+            nextStepOrder={
+              sortedSteps.length + 1
+            }
+
+            editingStep={
+              editingStep
+            }
+
+            onCreated={
+              handleStepCreated
+            }
+
+            onUpdated={
+              handleStepUpdated
+            }
+
+            onCancel={
+              handleCancelForm
+            }
+
+          />
+
+        )}
+
     </section>
   );
 }
+
 
 export default WorkflowEditor;

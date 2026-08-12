@@ -1,195 +1,505 @@
-import { useEffect, useState } from "react";
-import { createWorkflowStep } from "../../lib/graphql";
+import { useState } from "react";
 
-const STEP_TYPES = [
-  { value: "llm", label: "LLM" },
-  { value: "approval_gate", label: "Approval Gate" },
-  { value: "conditional_branch", label: "Conditional Branch" },
-  { value: "http_request", label: "HTTP Request" },
-  { value: "db_write", label: "Database Write" },
-];
+import {
+  createWorkflowStep,
+  updateWorkflowStep,
+} from "../../lib/graphql";
 
-function getDefaultConfig(type) {
-  switch (type) {
-    case "llm":
-      return JSON.stringify(
-        {
-          model: "openai/gpt-4o-mini",
-          prompt: "Give me three startup ideas related to AI.",
-          max_tokens: 120,
-        },
-        null,
-        2
-      );
-
-    case "approval_gate":
-      return JSON.stringify(
-        {
-          message: "Please approve this workflow before continuing.",
-        },
-        null,
-        2
-      );
-
-    case "conditional_branch":
-      return JSON.stringify(
-        {
-          field: "text",
-          value: "Personalized",
-          operator: "contains",
-          true_step_id: "",
-          false_step_id: "",
-        },
-        null,
-        2
-      );
-
-    case "http_request":
-      return JSON.stringify(
-        {
-          method: "GET",
-          url: "",
-          headers: {},
-          body: {},
-        },
-        null,
-        2
-      );
-
-    case "db_write":
-      return JSON.stringify(
-        {
-          table: "",
-          data: {},
-        },
-        null,
-        2
-      );
-
-    default:
-      return "{}";
-  }
-}
 
 function WorkflowStepForm({
   workflowId,
   nextStepOrder,
+  editingStep = null,
   onCreated,
+  onUpdated,
   onCancel,
 }) {
-  const [name, setName] = useState("");
-  const [type, setType] = useState("llm");
-  const [config, setConfig] = useState(getDefaultConfig("llm"));
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
 
-  useEffect(() => {
-    setConfig(getDefaultConfig(type));
-  }, [type]);
+  const isEditing =
+    Boolean(editingStep);
+
+
+  // ==========================================================
+  // STEP NAME
+  // ==========================================================
+
+  const [name, setName] =
+    useState(
+      editingStep?.name || ""
+    );
+
+
+  // ==========================================================
+  // STEP TYPE
+  // ==========================================================
+
+  const [type, setType] =
+    useState(
+      editingStep?.type || "llm"
+    );
+
+
+  // ==========================================================
+  // CONFIGURATION
+  // ==========================================================
+
+  const [config, setConfig] =
+    useState(
+      editingStep
+        ? JSON.stringify(
+            editingStep.config || {},
+            null,
+            2
+          )
+        : `{
+  "model": "openai/gpt-4o-mini",
+  "prompt": "",
+  "max_tokens": 120
+}`
+    );
+
+
+  // ==========================================================
+  // STATE
+  // ==========================================================
+
+  const [loading, setLoading] =
+    useState(false);
+
+  const [error, setError] =
+    useState("");
+
+
+  // ==========================================================
+  // SUBMIT
+  // ==========================================================
 
   const handleSubmit = async (e) => {
+
     e.preventDefault();
+
     setError("");
 
+
+    // --------------------------------------------------------
+    // Validate name
+    // --------------------------------------------------------
+
     if (!name.trim()) {
-      setError("Step name is required");
+
+      setError(
+        "Step name is required"
+      );
+
       return;
     }
+
+
+    // --------------------------------------------------------
+    // Parse JSON
+    // --------------------------------------------------------
 
     let parsedConfig;
 
     try {
-      parsedConfig = JSON.parse(config);
-    } catch {
-      setError("Configuration must be valid JSON");
+
+      parsedConfig =
+        JSON.parse(config);
+
+    } catch (err) {
+
+      setError(
+        "Configuration must be valid JSON"
+      );
+
       return;
     }
 
+
+    // --------------------------------------------------------
+    // LLM validation
+    // --------------------------------------------------------
+
+    if (
+      type === "llm" &&
+      (
+        !parsedConfig.prompt ||
+        !String(
+          parsedConfig.prompt
+        ).trim()
+      )
+    ) {
+
+      setError(
+        "LLM prompt is required. Please enter a prompt."
+      );
+
+      return;
+    }
+
+
+    // --------------------------------------------------------
+    // Save
+    // --------------------------------------------------------
+
     try {
+
       setLoading(true);
 
-      const step = await createWorkflowStep({
-        workflowId,
-        stepOrder: nextStepOrder,
-        name: name.trim(),
-        type,
-        config: parsedConfig,
-      });
 
-      onCreated(step);
+      // ======================================================
+      // EDIT EXISTING STEP
+      // ======================================================
+
+      if (isEditing) {
+
+        const updatedStep =
+          await updateWorkflowStep({
+
+            id:
+              editingStep.id,
+
+            stepOrder:
+              editingStep.step_order,
+
+            name:
+              name.trim(),
+
+            type,
+
+            config:
+              parsedConfig,
+
+          });
+
+
+        console.log(
+          "Workflow step updated:",
+          updatedStep
+        );
+
+
+        if (onUpdated) {
+
+          onUpdated(
+            updatedStep
+          );
+
+        }
+
+        return;
+      }
+
+
+      // ======================================================
+      // CREATE NEW STEP
+      // ======================================================
+
+      const newStep =
+        await createWorkflowStep({
+
+          workflowId,
+
+          stepOrder:
+            nextStepOrder,
+
+          name:
+            name.trim(),
+
+          type,
+
+          config:
+            parsedConfig,
+
+        });
+
+
+      console.log(
+        "Workflow step created:",
+        newStep
+      );
+
+
+      if (onCreated) {
+
+        onCreated(
+          newStep
+        );
+
+      }
+
     } catch (err) {
-      console.error("Failed to create workflow step:", err);
-      setError(err.message || "Failed to create workflow step");
+
+      console.error(
+        "Failed to save workflow step:",
+        err
+      );
+
+
+      setError(
+        err?.message ||
+          "Failed to save workflow step"
+      );
+
     } finally {
+
       setLoading(false);
+
     }
   };
 
-  return (
-    <div className="workflow-step-form panel">
-      <div className="panel-header">
-        <div>
-          <span className="eyebrow">WORKFLOW BUILDER</span>
-          <h3>Add Workflow Step</h3>
-        </div>
-        <span className="step-order-badge">Step {nextStepOrder}</span>
-      </div>
 
-      <form onSubmit={handleSubmit}>
-        <div className="form-field">
-          <label>Step name</label>
+  // ==========================================================
+  // DEFAULT CONFIGURATION
+  // ==========================================================
+
+  const handleTypeChange = (
+    newType
+  ) => {
+
+    setType(newType);
+
+    /*
+     * Only replace the configuration
+     * when creating a new step.
+     *
+     * When editing, preserve the
+     * existing configuration.
+     */
+
+    if (isEditing) {
+      return;
+    }
+
+
+    if (newType === "llm") {
+
+      setConfig(`{
+  "model": "openai/gpt-4o-mini",
+  "prompt": "",
+  "max_tokens": 120
+}`);
+
+    } else if (
+      newType === "http_request"
+    ) {
+
+      setConfig(`{
+  "url": "",
+  "method": "GET",
+  "headers": {},
+  "body": {}
+}`);
+
+    } else if (
+      newType === "db_write"
+    ) {
+
+      setConfig(`{
+  "table": "",
+  "data": {}
+}`);
+
+    } else if (
+      newType ===
+      "conditional_branch"
+    ) {
+
+      setConfig(`{
+  "condition": "",
+  "true_step": "",
+  "false_step": ""
+}`);
+
+    } else if (
+      newType ===
+      "approval_gate"
+    ) {
+
+      setConfig(`{
+  "message": "Approval required"
+}`);
+
+    }
+
+  };
+
+
+  // ==========================================================
+  // RENDER
+  // ==========================================================
+
+  return (
+    <div className="workflow-step-form">
+
+      {/* ==================================================== */}
+      {/* TITLE */}
+      {/* ==================================================== */}
+
+      <h3>
+        {isEditing
+          ? "Edit Workflow Step"
+          : "Add Workflow Step"}
+      </h3>
+
+
+      <form
+        onSubmit={
+          handleSubmit
+        }
+      >
+
+
+        {/* ================================================== */}
+        {/* STEP NAME */}
+        {/* ================================================== */}
+
+        <div>
+
+          <label>
+            Step name
+          </label>
+
           <input
             type="text"
             value={name}
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) =>
+              setName(
+                e.target.value
+              )
+            }
             placeholder="e.g. Generate AI Response"
             disabled={loading}
             required
           />
+
         </div>
 
-        <div className="form-field">
-          <label>Step type</label>
+
+        {/* ================================================== */}
+        {/* STEP TYPE */}
+        {/* ================================================== */}
+
+        <div>
+
+          <label>
+            Step type
+          </label>
+
           <select
             value={type}
-            onChange={(e) => setType(e.target.value)}
+            onChange={(e) =>
+              handleTypeChange(
+                e.target.value
+              )
+            }
             disabled={loading}
           >
-            {STEP_TYPES.map((item) => (
-              <option key={item.value} value={item.value}>
-                {item.label}
-              </option>
-            ))}
+
+            <option value="llm">
+              LLM
+            </option>
+
+            <option value="http_request">
+              HTTP Request
+            </option>
+
+            <option value="db_write">
+              Database Write
+            </option>
+
+            <option value="conditional_branch">
+              Conditional Branch
+            </option>
+
+            <option value="approval_gate">
+              Approval Gate
+            </option>
+
           </select>
+
         </div>
 
-        <div className="form-field">
-          <label>Configuration (JSON)</label>
+
+        {/* ================================================== */}
+        {/* CONFIGURATION */}
+        {/* ================================================== */}
+
+        <div>
+
+          <label>
+            Configuration (JSON)
+          </label>
+
           <textarea
             value={config}
-            onChange={(e) => setConfig(e.target.value)}
-            rows={10}
-            spellCheck="false"
+            onChange={(e) =>
+              setConfig(
+                e.target.value
+              )
+            }
+            rows={14}
             disabled={loading}
+            spellCheck={false}
           />
-          <small>
-            Use the step IDs from the workflow for conditional true/false branches.
-          </small>
+
         </div>
 
-        {error && <p className="error">{error}</p>}
 
-        <div className="form-actions">
-          <button type="submit" disabled={loading}>
-            {loading ? "Adding..." : "Add Step"}
+        {/* ================================================== */}
+        {/* ERROR */}
+        {/* ================================================== */}
+
+        {error && (
+
+          <p className="error">
+            {error}
+          </p>
+
+        )}
+
+
+        {/* ================================================== */}
+        {/* BUTTONS */}
+        {/* ================================================== */}
+
+        <div className="workflow-step-form-actions">
+
+          {/* SAVE */}
+
+          <button
+            type="submit"
+            disabled={loading}
+          >
+
+            {loading
+              ? "Saving..."
+              : isEditing
+              ? "Save Changes"
+              : "Add Step"}
+
           </button>
-          <button type="button" onClick={onCancel} disabled={loading} className="secondary-button">
+
+
+          {/* CANCEL */}
+
+          <button
+            type="button"
+            onClick={
+              onCancel
+            }
+            disabled={loading}
+          >
             Cancel
           </button>
+
         </div>
+
       </form>
+
     </div>
   );
 }
+
 
 export default WorkflowStepForm;

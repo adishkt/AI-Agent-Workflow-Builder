@@ -6,10 +6,10 @@ import { nhost } from "./nhost";
 |--------------------------------------------------------------------------
 |
 | role:
-|   "user"   -> authenticated Nhost user role
-|   "owner"  -> organization owner
-|   "editor" -> organization editor
-|   "viewer" -> organization viewer
+|   null   -> use normal authenticated "user" role
+|   owner  -> organization owner
+|   editor -> organization editor
+|   viewer -> organization viewer
 |
 */
 
@@ -20,6 +20,10 @@ async function request(
 ) {
   const options = {};
 
+  /*
+   * Only send x-hasura-role when we explicitly
+   * want an organization role.
+   */
   if (role) {
     options.headers = {
       "x-hasura-role": role,
@@ -37,10 +41,10 @@ async function request(
       );
 
     /*
-     * Handle GraphQL errors returned in the response.
+     * GraphQL errors.
      */
     const errors =
-      response.body?.errors;
+      response?.body?.errors;
 
     if (errors?.length) {
       throw new Error(
@@ -50,16 +54,16 @@ async function request(
     }
 
     /*
-     * Handle Nhost-level errors.
+     * Nhost request-level error.
      */
-    if (response.error) {
+    if (response?.error) {
       throw new Error(
         response.error.message ||
           "GraphQL request failed"
       );
     }
 
-    return response.body?.data;
+    return response?.body?.data || null;
   } catch (error) {
     console.error(
       "GraphQL request failed:",
@@ -81,18 +85,14 @@ async function request(
 |
 | IMPORTANT:
 |
-| org_members currently exposes:
+| We first query org_members using the normal authenticated
+| "user" role.
 |
-|   id
-|   org_id
-|   user_id
-|   role
+| Hasura permission should restrict this query using:
 |
-| There is NO "organization" relationship exposed by Hasura.
+| user_id _eq X-Hasura-User-Id
 |
-| Therefore we only query the fields that actually exist.
-|
-| The normal authenticated "user" role is used here.
+| We DO NOT use x-hasura-role: owner here.
 |
 */
 
@@ -115,6 +115,11 @@ export async function getUserOrganization() {
       "user"
     );
 
+  console.log(
+    "ORG MEMBERS RESPONSE:",
+    data
+  );
+
   const memberships =
     data?.org_members || [];
 
@@ -127,9 +132,18 @@ export async function getUserOrganization() {
   const membership =
     memberships[0];
 
+  console.log(
+    "CURRENT MEMBERSHIP:",
+    membership
+  );
+
   const role =
     membership.role;
 
+  /*
+   * Make sure our application only accepts
+   * the organization roles we support.
+   */
   if (
     ![
       "owner",
@@ -141,6 +155,11 @@ export async function getUserOrganization() {
       `Unsupported organization role: ${role}`
     );
   }
+
+  console.log(
+    "CURRENT ORGANIZATION ROLE:",
+    role
+  );
 
   return membership;
 }
@@ -156,7 +175,15 @@ export async function getCurrentUserRole() {
   const membership =
     await getUserOrganization();
 
-  return membership.role;
+  const role =
+    membership.role;
+
+  console.log(
+    "GET CURRENT USER ROLE:",
+    role
+  );
+
+  return role;
 }
 
 
@@ -177,6 +204,11 @@ export async function getWorkflows() {
 
   const role =
     membership.role;
+
+  console.log(
+    "GET WORKFLOWS ROLE:",
+    role
+  );
 
   const data =
     await request(
@@ -214,6 +246,67 @@ export async function getWorkflows() {
     );
 
   return data?.workflows || [];
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Get Single Workflow
+|--------------------------------------------------------------------------
+*/
+
+export async function getWorkflow(
+  workflowId
+) {
+  const membership =
+    await getUserOrganization();
+
+  const role =
+    membership.role;
+
+  console.log(
+    "GET WORKFLOW ROLE:",
+    role
+  );
+
+  const data =
+    await request(
+      `
+        query GetWorkflow(
+          $workflowId: uuid!
+        ) {
+          workflows_by_pk(
+            id: $workflowId
+          ) {
+            id
+            org_id
+            name
+            description
+            created_at
+            updated_at
+
+            workflow_steps(
+              order_by: {
+                step_order: asc
+              }
+            ) {
+              id
+              workflow_id
+              step_order
+              name
+              type
+              config
+            }
+          }
+        }
+      `,
+      {
+        workflowId,
+      },
+      role
+    );
+
+  return data?.workflows_by_pk || null;
 }
 
 
@@ -272,7 +365,7 @@ export async function createWorkflow({
       role
     );
 
-  return data?.insert_workflows_one;
+  return data?.insert_workflows_one || null;
 }
 
 
@@ -334,7 +427,10 @@ export async function updateWorkflow({
       role
     );
 
-  return data?.update_workflows_by_pk;
+  return (
+    data?.update_workflows_by_pk ||
+    null
+  );
 }
 
 
@@ -343,7 +439,7 @@ export async function updateWorkflow({
 | Delete Workflow
 |--------------------------------------------------------------------------
 |
-| owner  -> allowed
+| owner -> allowed
 | editor -> rejected
 | viewer -> rejected
 |
@@ -377,7 +473,10 @@ export async function deleteWorkflow(
       role
     );
 
-  return data?.delete_workflows_by_pk;
+  return (
+    data?.delete_workflows_by_pk ||
+    null
+  );
 }
 
 
@@ -443,7 +542,286 @@ export async function createWorkflowStep({
       role
     );
 
-  return data?.insert_workflow_steps_one;
+  return (
+    data?.insert_workflow_steps_one ||
+    null
+  );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Update Workflow Step
+|--------------------------------------------------------------------------
+|
+| owner  -> allowed
+| editor -> allowed
+| viewer -> rejected
+|
+*/
+
+export async function updateWorkflowStep({
+  id,
+  stepOrder,
+  name,
+  type,
+  config,
+}) {
+  const membership =
+    await getUserOrganization();
+
+  const role =
+    membership.role;
+
+  const data =
+    await request(
+      `
+        mutation UpdateWorkflowStep(
+          $id: uuid!
+          $stepOrder: Int!
+          $name: String!
+          $type: String!
+          $config: jsonb!
+        ) {
+          update_workflow_steps_by_pk(
+            pk_columns: {
+              id: $id
+            }
+
+            _set: {
+              step_order: $stepOrder
+              name: $name
+              type: $type
+              config: $config
+            }
+          ) {
+            id
+            workflow_id
+            step_order
+            name
+            type
+            config
+          }
+        }
+      `,
+      {
+        id,
+        stepOrder,
+        name,
+        type,
+        config,
+      },
+      role
+    );
+
+  return (
+    data?.update_workflow_steps_by_pk ||
+    null
+  );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Delete Workflow Step
+|--------------------------------------------------------------------------
+|
+| owner  -> allowed
+| editor -> allowed
+| viewer -> rejected
+|
+*/
+
+export async function deleteWorkflowStep(
+  id
+) {
+  const membership =
+    await getUserOrganization();
+
+  const role =
+    membership.role;
+
+  const data =
+    await request(
+      `
+        mutation DeleteWorkflowStep(
+          $id: uuid!
+        ) {
+          delete_workflow_steps_by_pk(
+            id: $id
+          ) {
+            id
+          }
+        }
+      `,
+      {
+        id,
+      },
+      role
+    );
+
+  return (
+    data?.delete_workflow_steps_by_pk ||
+    null
+  );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Reorder Workflow Step
+|--------------------------------------------------------------------------
+*/
+
+export async function reorderWorkflowStep({
+  id,
+  stepOrder,
+}) {
+  const membership =
+    await getUserOrganization();
+
+  const role =
+    membership.role;
+
+  const data =
+    await request(
+      `
+        mutation ReorderWorkflowStep(
+          $id: uuid!
+          $stepOrder: Int!
+        ) {
+          update_workflow_steps_by_pk(
+            pk_columns: {
+              id: $id
+            }
+
+            _set: {
+              step_order: $stepOrder
+            }
+          ) {
+            id
+            workflow_id
+            step_order
+            name
+            type
+            config
+          }
+        }
+      `,
+      {
+        id,
+        stepOrder,
+      },
+      role
+    );
+
+  return (
+    data?.update_workflow_steps_by_pk ||
+    null
+  );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Reorder Multiple Workflow Steps
+|--------------------------------------------------------------------------
+|
+| steps:
+|
+| [
+|   { id: "uuid1", stepOrder: 1 },
+|   { id: "uuid2", stepOrder: 2 },
+|   { id: "uuid3", stepOrder: 3 }
+| ]
+|
+*/
+
+export async function reorderWorkflowSteps(
+  steps
+) {
+  if (!Array.isArray(steps)) {
+    throw new Error(
+      "steps must be an array"
+    );
+  }
+
+  if (!steps.length) {
+    return [];
+  }
+
+  const membership =
+    await getUserOrganization();
+
+  const role =
+    membership.role;
+
+  const mutations = [];
+  const variables = {};
+  const variableDefinitions = [];
+
+  steps.forEach(
+    (step, index) => {
+      const variableName =
+        `step${index}`;
+
+      mutations.push(`
+        ${variableName}: update_workflow_steps_by_pk(
+          pk_columns: {
+            id: $${variableName}Id
+          }
+
+          _set: {
+            step_order: $${variableName}Order
+          }
+        ) {
+          id
+          workflow_id
+          step_order
+          name
+          type
+          config
+        }
+      `);
+
+      variableDefinitions.push(
+        `$${variableName}Id: uuid!`
+      );
+
+      variableDefinitions.push(
+        `$${variableName}Order: Int!`
+      );
+
+      variables[
+        `${variableName}Id`
+      ] = step.id;
+
+      variables[
+        `${variableName}Order`
+      ] =
+        step.stepOrder ??
+        index + 1;
+    }
+  );
+
+  const mutation = `
+    mutation ReorderWorkflowSteps(
+      ${variableDefinitions.join(", ")}
+    ) {
+      ${mutations.join("\n")}
+    }
+  `;
+
+  const data =
+    await request(
+      mutation,
+      variables,
+      role
+    );
+
+  return Object.values(
+    data || {}
+  );
 }
 
 
@@ -452,8 +830,8 @@ export async function createWorkflowStep({
 | Trigger Workflow Run
 |--------------------------------------------------------------------------
 |
-| owner/editor/viewer permissions are enforced
-| by the Hasura Action configuration.
+| owner/editor/viewer permissions are
+| enforced by Hasura Action configuration.
 |
 */
 
