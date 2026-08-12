@@ -6,6 +6,12 @@ export async function getCurrentStep(
   graphqlRequest,
   workflowStepId
 ) {
+  if (!workflowStepId) {
+    throw new Error(
+      "workflowStepId is required"
+    );
+  }
+
   const query = `
     query GetCurrentStep(
       $step_id: uuid!
@@ -36,8 +42,7 @@ export async function getCurrentStep(
     await graphqlRequest(
       query,
       {
-        step_id:
-          workflowStepId,
+        step_id: workflowStepId,
       }
     );
 
@@ -55,6 +60,60 @@ export async function getCurrentStep(
 
 
 // ============================================================
+// GET WORKFLOW RUN
+// ============================================================
+
+export async function getWorkflowRun(
+  graphqlRequest,
+  workflowRunId
+) {
+  if (!workflowRunId) {
+    throw new Error(
+      "workflowRunId is required"
+    );
+  }
+
+  const query = `
+    query GetWorkflowRun(
+      $run_id: uuid!
+    ) {
+      workflow_runs_by_pk(
+        id: $run_id
+      ) {
+        id
+        workflow_id
+        status
+
+        workflow {
+          id
+          org_id
+        }
+      }
+    }
+  `;
+
+  const data =
+    await graphqlRequest(
+      query,
+      {
+        run_id: workflowRunId,
+      }
+    );
+
+  const workflowRun =
+    data?.workflow_runs_by_pk;
+
+  if (!workflowRun) {
+    throw new Error(
+      "Workflow run not found"
+    );
+  }
+
+  return workflowRun;
+}
+
+
+// ============================================================
 // GET NEXT STEP
 // ============================================================
 
@@ -63,6 +122,21 @@ export async function getNextStep(
   workflowId,
   stepOrder
 ) {
+  if (!workflowId) {
+    throw new Error(
+      "workflowId is required"
+    );
+  }
+
+  if (
+    stepOrder === undefined ||
+    stepOrder === null
+  ) {
+    throw new Error(
+      "stepOrder is required"
+    );
+  }
+
   const query = `
     query GetNextStep(
       $workflow_id: uuid!
@@ -99,11 +173,8 @@ export async function getNextStep(
     await graphqlRequest(
       query,
       {
-        workflow_id:
-          workflowId,
-
-        step_order:
-          stepOrder,
+        workflow_id: workflowId,
+        step_order: stepOrder,
       }
     );
 
@@ -122,6 +193,12 @@ export async function getStepById(
   graphqlRequest,
   stepId
 ) {
+  if (!stepId) {
+    throw new Error(
+      "stepId is required"
+    );
+  }
+
   const query = `
     query GetStepById(
       $step_id: uuid!
@@ -143,8 +220,7 @@ export async function getStepById(
     await graphqlRequest(
       query,
       {
-        step_id:
-          stepId,
+        step_id: stepId,
       }
     );
 
@@ -171,6 +247,12 @@ export async function markStepFailed(
   errorMessage,
   attemptCount
 ) {
+  if (!stepRunId) {
+    throw new Error(
+      "stepRunId is required"
+    );
+  }
+
   const mutation = `
     mutation MarkStepFailed(
       $step_id: uuid!
@@ -189,6 +271,8 @@ export async function markStepFailed(
         }
       ) {
         id
+        workflow_run_id
+        workflow_step_id
         status
         error
         attempt_count
@@ -200,19 +284,21 @@ export async function markStepFailed(
     await graphqlRequest(
       mutation,
       {
-        step_id:
-          stepRunId,
+        step_id: stepRunId,
 
         error:
-          errorMessage,
+          errorMessage ||
+          "Step failed",
 
         attempt_count:
-          attemptCount,
+          attemptCount ?? 0,
       }
     );
 
-  return data?.update_step_runs_by_pk ||
-    null;
+  return (
+    data?.update_step_runs_by_pk ||
+    null
+  );
 }
 
 
@@ -227,6 +313,18 @@ export async function failExecution(
   errorMessage,
   attemptCount
 ) {
+  if (!stepRunId) {
+    throw new Error(
+      "stepRunId is required"
+    );
+  }
+
+  if (!workflowRunId) {
+    throw new Error(
+      "workflowRunId is required"
+    );
+  }
+
   const mutation = `
     mutation FailExecution(
       $step_id: uuid!
@@ -247,6 +345,8 @@ export async function failExecution(
         }
       ) {
         id
+        workflow_run_id
+        workflow_step_id
         status
         error
         attempt_count
@@ -273,17 +373,17 @@ export async function failExecution(
     await graphqlRequest(
       mutation,
       {
-        step_id:
-          stepRunId,
+        step_id: stepRunId,
 
         workflow_run_id:
           workflowRunId,
 
         error:
-          errorMessage,
+          errorMessage ||
+          "Workflow execution failed",
 
         attempt_count:
-          attemptCount,
+          attemptCount ?? 0,
       }
     );
 
@@ -304,6 +404,18 @@ export async function createRetryStepRun(
     input,
   }
 ) {
+  if (!workflowRunId) {
+    throw new Error(
+      "workflowRunId is required"
+    );
+  }
+
+  if (!workflowStepId) {
+    throw new Error(
+      "workflowStepId is required"
+    );
+  }
+
   const mutation = `
     mutation CreateRetryStepRun(
       $workflow_run_id: uuid!
@@ -311,7 +423,6 @@ export async function createRetryStepRun(
       $attempt_count: Int!
       $input: jsonb
     ) {
-
       insert_step_runs_one(
         object: {
           workflow_run_id:
@@ -351,10 +462,10 @@ export async function createRetryStepRun(
           workflowStepId,
 
         attempt_count:
-          attemptCount,
+          attemptCount ?? 0,
 
         input:
-          input || {},
+          input ?? {},
       }
     );
 
@@ -639,8 +750,11 @@ export async function pauseApprovalGate(
         }
       ) {
         id
+        workflow_run_id
+        workflow_step_id
         status
         output
+        error
       }
 
       update_workflow_runs_by_pk(
@@ -655,6 +769,7 @@ export async function pauseApprovalGate(
       ) {
         id
         status
+        error
       }
     }
   `;
@@ -695,10 +810,6 @@ export async function approvePausedStep(
     userId,
   }
 ) {
-  // ----------------------------------------------------------
-  // VALIDATE INPUT
-  // ----------------------------------------------------------
-
   if (!stepRunId) {
     throw new Error(
       "stepRunId is required"
@@ -712,9 +823,9 @@ export async function approvePausedStep(
   }
 
 
-  // ----------------------------------------------------------
-  // 1. GET STEP RUN
-  // ----------------------------------------------------------
+  // ==========================================================
+  // GET STEP RUN
+  // ==========================================================
 
   const stepRunQuery = `
     query GetStepRun(
@@ -754,9 +865,9 @@ export async function approvePausedStep(
   }
 
 
-  // ----------------------------------------------------------
-  // 2. STEP MUST BE PAUSED
-  // ----------------------------------------------------------
+  // ==========================================================
+  // STEP MUST BE PAUSED
+  // ==========================================================
 
   if (
     stepRun.status !==
@@ -768,9 +879,9 @@ export async function approvePausedStep(
   }
 
 
-  // ----------------------------------------------------------
-  // 3. GET WORKFLOW STEP
-  // ----------------------------------------------------------
+  // ==========================================================
+  // GET STEP
+  // ==========================================================
 
   const step =
     await getCurrentStep(
@@ -779,9 +890,9 @@ export async function approvePausedStep(
     );
 
 
-  // ----------------------------------------------------------
-  // 4. VERIFY APPROVAL GATE
-  // ----------------------------------------------------------
+  // ==========================================================
+  // VERIFY APPROVAL GATE
+  // ==========================================================
 
   if (
     step.type !==
@@ -793,9 +904,9 @@ export async function approvePausedStep(
   }
 
 
-  // ----------------------------------------------------------
-  // 5. GET WORKFLOW
-  // ----------------------------------------------------------
+  // ==========================================================
+  // GET WORKFLOW
+  // ==========================================================
 
   const workflowQuery = `
     query GetWorkflow(
@@ -830,9 +941,9 @@ export async function approvePausedStep(
   }
 
 
-  // ----------------------------------------------------------
-  // 6. VERIFY ORGANIZATION MEMBERSHIP
-  // ----------------------------------------------------------
+  // ==========================================================
+  // VERIFY MEMBERSHIP
+  // ==========================================================
 
   const membershipQuery = `
     query GetApproverMembership(
@@ -881,9 +992,9 @@ export async function approvePausedStep(
   }
 
 
-  // ----------------------------------------------------------
-  // 7. VERIFY ROLE
-  // ----------------------------------------------------------
+  // ==========================================================
+  // VERIFY ROLE
+  // ==========================================================
 
   if (
     membership.role !== "owner" &&
@@ -895,9 +1006,9 @@ export async function approvePausedStep(
   }
 
 
-  // ----------------------------------------------------------
-  // 8. GET NEXT STEP
-  // ----------------------------------------------------------
+  // ==========================================================
+  // GET NEXT STEP
+  // ==========================================================
 
   const nextStep =
     await getNextStep(
@@ -907,9 +1018,9 @@ export async function approvePausedStep(
     );
 
 
-  // ----------------------------------------------------------
-  // 9. CREATE APPROVAL OUTPUT
-  // ----------------------------------------------------------
+  // ==========================================================
+  // APPROVAL OUTPUT
+  // ==========================================================
 
   const approvedAt =
     new Date().toISOString();
@@ -925,13 +1036,10 @@ export async function approvePausedStep(
   };
 
 
-  // ----------------------------------------------------------
-  // 10. PRESERVE PREVIOUS OUTPUT
-  // ----------------------------------------------------------
-
   const previousOutput =
     stepRun.input?.previous_output ??
     null;
+
 
   const nextStepInput = {
     previous_output:
@@ -942,9 +1050,9 @@ export async function approvePausedStep(
   };
 
 
-  // ----------------------------------------------------------
-  // 11. RESUME WITH NEXT STEP
-  // ----------------------------------------------------------
+  // ==========================================================
+  // NEXT STEP EXISTS
+  // ==========================================================
 
   if (nextStep) {
 
@@ -990,6 +1098,8 @@ export async function approvePausedStep(
           }
         ) {
           id
+          workflow_run_id
+          workflow_step_id
           status
           approved_by
           approved_at
@@ -1031,9 +1141,9 @@ export async function approvePausedStep(
           }
         ) {
           id
-          status
           workflow_run_id
           workflow_step_id
+          status
           attempt_count
           input
         }
@@ -1085,14 +1195,24 @@ export async function approvePausedStep(
   }
 
 
-  // ----------------------------------------------------------
-  // 12. APPROVAL IS FINAL WORKFLOW STEP
-  // ----------------------------------------------------------
+  // ==========================================================
+  // FINAL APPROVAL STEP
+  // ==========================================================
+
+  const organizationId =
+    workflow.org_id;
+
+  if (!organizationId) {
+    throw new Error(
+      "Workflow organization ID is missing"
+    );
+  }
 
   const mutation = `
     mutation ApproveFinalStep(
       $step_id: uuid!
       $workflow_run_id: uuid!
+      $organization_id: uuid!
       $approved_by: uuid!
       $approved_at: timestamptz!
       $output: jsonb!
@@ -1120,6 +1240,8 @@ export async function approvePausedStep(
         }
       ) {
         id
+        workflow_run_id
+        workflow_step_id
         status
         approved_by
         approved_at
@@ -1141,6 +1263,20 @@ export async function approvePausedStep(
         status
         error
       }
+
+      update_organizations_by_pk(
+        pk_columns: {
+          id: $organization_id
+        }
+
+        _inc: {
+          quota_used: 1
+        }
+      ) {
+        id
+        quota_used
+        quota_limit
+      }
     }
   `;
 
@@ -1153,6 +1289,9 @@ export async function approvePausedStep(
 
         workflow_run_id:
           stepRun.workflow_run_id,
+
+        organization_id:
+          organizationId,
 
         approved_by:
           userId,

@@ -4,6 +4,7 @@ import {
 
 import {
   getCurrentStep,
+  getWorkflowRun,
   getNextStep,
   getStepById,
   markStepFailed,
@@ -158,7 +159,7 @@ export default async (
 
 
     // ========================================================
-    // 2. CHECK ENVIRONMENT
+    // 2. ENVIRONMENT
     // ========================================================
 
     if (
@@ -194,7 +195,7 @@ export default async (
 
 
     // ========================================================
-    // 4. GET CURRENT WORKFLOW STEP
+    // 4. GET CURRENT STEP
     // ========================================================
 
     const step =
@@ -214,17 +215,53 @@ export default async (
 
 
     // ========================================================
-    // VERIFY WORKFLOW
+    // 4A. GET WORKFLOW RUN
     // ========================================================
 
+    const workflowRun =
+      await getWorkflowRun(
+        graphqlRequest,
+        workflowRunId
+      );
+
+
+    // ========================================================
+    // 4B. VERIFY WORKFLOW CONSISTENCY
+    // ========================================================
+
+    /*
+     *
+     * IMPORTANT:
+     *
+     * workflowRunId is NOT workflowId.
+     *
+     * Correct relationship:
+     *
+     * workflowRun.workflow_id
+     *          ==
+     * step.workflow_id
+     *
+     */
+
     if (
-      step.workflow_id !==
-      workflowRunId &&
-      !step.workflow_id
+      workflowRun.workflow_id !==
+      step.workflow_id
     ) {
 
       throw new Error(
-        "Workflow step does not belong to a workflow"
+        "Workflow step does not belong to this workflow run"
+      );
+
+    }
+
+
+    if (
+      workflowRun.id !==
+      workflowRunId
+    ) {
+
+      throw new Error(
+        "Invalid workflow run"
       );
 
     }
@@ -233,6 +270,11 @@ export default async (
     console.log(
       "Workflow ID:",
       step.workflow_id
+    );
+
+    console.log(
+      "Workflow Run ID:",
+      workflowRun.id
     );
 
     console.log(
@@ -254,17 +296,16 @@ export default async (
     // ========================================================
     // 5. APPROVAL GATE
     // ========================================================
-    //
-    // Approval steps pause the workflow.
-    //
-    // IMPORTANT:
-    //
-    // We return immediately here.
-    //
-    // approveStep later creates the next pending
-    // step_run, which triggers this function again.
-    //
-    // ========================================================
+
+    /*
+     *
+     * Approval gate does not execute immediately.
+     *
+     * It pauses the workflow.
+     *
+     * approveStep later creates the next step_run.
+     *
+     */
 
     if (
       step.type ===
@@ -338,7 +379,7 @@ export default async (
 
 
     // ========================================================
-    // 6. EXECUTE CURRENT STEP
+    // 6. EXECUTE STEP
     // ========================================================
 
     let stepOutput;
@@ -434,7 +475,7 @@ export default async (
       ) {
 
         stepOutput =
-          executeConditionalStep(
+          await executeConditionalStep(
             step,
 
             stepInput
@@ -492,7 +533,7 @@ export default async (
 
 
       // ======================================================
-      // UNSUPPORTED STEP
+      // UNSUPPORTED
       // ======================================================
 
       else {
@@ -507,10 +548,6 @@ export default async (
     } catch (
       stepError
     ) {
-
-      // ======================================================
-      // STEP FAILED
-      // ======================================================
 
       console.error(
         "========================================"
@@ -550,7 +587,7 @@ export default async (
 
 
       // ======================================================
-      // RETRY AVAILABLE
+      // RETRY
       // ======================================================
 
       if (
@@ -572,10 +609,6 @@ export default async (
 
         try {
 
-          // --------------------------------------------------
-          // Mark current step failed
-          // --------------------------------------------------
-
           await markStepFailed(
             graphqlRequest,
 
@@ -587,19 +620,11 @@ export default async (
           );
 
 
-          // --------------------------------------------------
-          // Preserve input
-          // --------------------------------------------------
-
           const retryInput =
             getRetryInput(
               stepInput
             );
 
-
-          // --------------------------------------------------
-          // Create retry step run
-          // --------------------------------------------------
 
           const retryStepRun =
             await createRetryStepRun(
@@ -623,15 +648,6 @@ export default async (
             retryStepRun?.id
           );
 
-
-          // --------------------------------------------------
-          // IMPORTANT
-          //
-          // The new step_run has status "pending".
-          //
-          // Hasura Event Trigger should execute this
-          // function again.
-          // --------------------------------------------------
 
           return res.status(200).json({
 
@@ -661,6 +677,7 @@ export default async (
             error:
               errorMessage,
           });
+
 
         } catch (
           retryError
@@ -726,7 +743,7 @@ export default async (
 
 
       // ======================================================
-      // NO RETRIES LEFT
+      // NO RETRIES
       // ======================================================
 
       console.error(
@@ -790,7 +807,7 @@ export default async (
 
 
     // ========================================================
-    // 7. VALIDATE STEP OUTPUT
+    // 7. VALIDATE OUTPUT
     // ========================================================
 
     if (
@@ -815,14 +832,6 @@ export default async (
 
     // ========================================================
     // 8. CONDITIONAL BRANCH
-    //
-    // IMPORTANT:
-    //
-    // A conditional step must ONLY execute the selected
-    // branch.
-    //
-    // It must NOT call getNextStep().
-    //
     // ========================================================
 
     if (
@@ -843,16 +852,6 @@ export default async (
       }
 
 
-      console.log(
-        "Conditional selected step:",
-        selectedStepId
-      );
-
-
-      // ------------------------------------------------------
-      // Load selected branch
-      // ------------------------------------------------------
-
       const nextStep =
         await getStepById(
           graphqlRequest,
@@ -871,9 +870,7 @@ export default async (
 
 
       // ------------------------------------------------------
-      // Security
-      //
-      // Branch cannot jump to another workflow.
+      // SECURITY CHECK
       // ------------------------------------------------------
 
       if (
@@ -888,15 +885,6 @@ export default async (
       }
 
 
-      console.log(
-        `Conditional branch selected: ${nextStep.name}`
-      );
-
-
-      // ------------------------------------------------------
-      // Create selected branch only
-      // ------------------------------------------------------
-
       await completeAndCreateNext(
         graphqlRequest,
         {
@@ -910,15 +898,6 @@ export default async (
           output:
             stepOutput,
         }
-      );
-
-
-      console.log(
-        `Completed conditional step: ${step.name}`
-      );
-
-      console.log(
-        `Selected branch created: ${nextStep.name}`
       );
 
 
@@ -959,15 +938,6 @@ export default async (
 
     // ========================================================
     // 9. NORMAL STEP → NEXT STEP
-    //
-    // This handles:
-    //
-    // - llm
-    // - http_request
-    // - db_write
-    //
-    // Approval gates were already handled above.
-    // Conditional branches were already handled above.
     // ========================================================
 
     const nextStep =
@@ -982,32 +952,20 @@ export default async (
 
     if (nextStep) {
 
-      console.log(
-        "========================================"
-      );
+      // ------------------------------------------------------
+      // SECURITY CHECK
+      // ------------------------------------------------------
 
-      console.log(
-        "NORMAL WORKFLOW PROGRESSION"
-      );
+      if (
+        nextStep.workflow_id !==
+        step.workflow_id
+      ) {
 
-      console.log(
-        "Current step:",
-        step.name
-      );
+        throw new Error(
+          "Next step belongs to a different workflow"
+        );
 
-      console.log(
-        "Next step:",
-        nextStep.name
-      );
-
-      console.log(
-        "Next step type:",
-        nextStep.type
-      );
-
-      console.log(
-        "========================================"
-      );
+      }
 
 
       await completeAndCreateNext(
@@ -1034,16 +992,6 @@ export default async (
         `Next step created: ${nextStep.name}`
       );
 
-
-      // ------------------------------------------------------
-      // IMPORTANT
-      //
-      // completeAndCreateNext creates the next step_run
-      // with status "pending".
-      //
-      // Your Hasura Event Trigger should then invoke
-      // executeWorkflowStep again.
-      // ------------------------------------------------------
 
       return res.status(200).json({
 
@@ -1080,19 +1028,10 @@ export default async (
     // ========================================================
     // 10. FINAL STEP
     // ========================================================
-    //
-    // No next step means this was the final step.
-    //
-    // Complete:
-    //
-    // 1. step_run
-    // 2. workflow_run
-    // 3. organization quota
-    //
-    // ========================================================
 
     const organizationId =
-      step.workflow?.organization?.id;
+      step.workflow?.organization?.id ||
+      workflowRun.workflow?.org_id;
 
 
     if (!organizationId) {
@@ -1143,10 +1082,6 @@ export default async (
     );
 
     console.log(
-      "Quota incremented"
-    );
-
-    console.log(
       "========================================"
     );
 
@@ -1178,10 +1113,6 @@ export default async (
   } catch (
     error
   ) {
-
-    // ========================================================
-    // GLOBAL FUNCTION ERROR
-    // ========================================================
 
     console.error(
       "========================================"
