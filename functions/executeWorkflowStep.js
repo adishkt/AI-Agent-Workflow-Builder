@@ -37,20 +37,30 @@ import {
   getRetryInput,
 } from "./lib/retry.js";
 
-export default async (req, res) => {
+
+export default async (
+  req,
+  res
+) => {
+
   // ==========================================================
   // FUNCTION TIME
   // ==========================================================
 
-  const startTime = Date.now();
+  const startTime =
+    Date.now();
 
-  const FUNCTION_TIMEOUT = 9000;
+  const FUNCTION_TIMEOUT =
+    9000;
 
-  const getRemainingTime = () =>
-    FUNCTION_TIMEOUT -
-    (Date.now() - startTime);
+  const getRemainingTime =
+    () =>
+      FUNCTION_TIMEOUT -
+      (Date.now() - startTime);
+
 
   try {
+
     // ========================================================
     // 1. READ HASURA EVENT
     // ========================================================
@@ -58,13 +68,18 @@ export default async (req, res) => {
     const stepRun =
       req.body?.event?.data?.new;
 
+
     if (!stepRun) {
+
       return res.status(400).json({
         success: false,
+
         message:
           "step_run event data is missing",
       });
+
     }
+
 
     const stepRunId =
       stepRun.id;
@@ -75,45 +90,72 @@ export default async (req, res) => {
     const workflowStepId =
       stepRun.workflow_step_id;
 
+
     const stepInput =
       stepRun.input || {};
+
 
     const currentAttempt =
       Number(
         stepRun.attempt_count || 0
       );
 
+
+    // ========================================================
+    // VALIDATE EVENT
+    // ========================================================
+
     if (
       !stepRunId ||
       !workflowRunId ||
       !workflowStepId
     ) {
+
       return res.status(400).json({
         success: false,
+
         message:
           "Invalid step_run event data",
       });
+
     }
+
 
     console.log(
       "========================================"
     );
 
     console.log(
-      `Executing step: ${workflowStepId}`
+      "EXECUTING WORKFLOW STEP"
     );
 
     console.log(
-      `Workflow run: ${workflowRunId}`
+      "Step run:",
+      stepRunId
     );
 
     console.log(
-      `Step run: ${stepRunId}`
+      "Workflow run:",
+      workflowRunId
     );
 
     console.log(
-      `Attempt count: ${currentAttempt}`
+      "Workflow step:",
+      workflowStepId
     );
+
+    console.log(
+      "Attempt:",
+      currentAttempt
+    );
+
+    console.log(
+      "Input:",
+      JSON.stringify(
+        stepInput
+      )
+    );
+
 
     // ========================================================
     // 2. CHECK ENVIRONMENT
@@ -122,18 +164,24 @@ export default async (req, res) => {
     if (
       !process.env.NHOST_GRAPHQL_URL
     ) {
+
       throw new Error(
         "NHOST_GRAPHQL_URL is not configured"
       );
+
     }
+
 
     if (
       !process.env.NHOST_ADMIN_SECRET
     ) {
+
       throw new Error(
         "NHOST_ADMIN_SECRET is not configured"
       );
+
     }
+
 
     // ========================================================
     // 3. GRAPHQL CLIENT
@@ -143,6 +191,7 @@ export default async (req, res) => {
       createGraphQLClient({
         getRemainingTime,
       });
+
 
     // ========================================================
     // 4. GET CURRENT WORKFLOW STEP
@@ -154,54 +203,116 @@ export default async (req, res) => {
         workflowStepId
       );
 
+
     if (!step) {
+
       throw new Error(
         "Workflow step could not be loaded"
       );
+
     }
 
+
+    // ========================================================
+    // VERIFY WORKFLOW
+    // ========================================================
+
+    if (
+      step.workflow_id !==
+      workflowRunId &&
+      !step.workflow_id
+    ) {
+
+      throw new Error(
+        "Workflow step does not belong to a workflow"
+      );
+
+    }
+
+
     console.log(
-      `Workflow ID: ${step.workflow_id}`
+      "Workflow ID:",
+      step.workflow_id
     );
 
     console.log(
-      `Step name: ${step.name}`
+      "Step name:",
+      step.name
     );
 
     console.log(
-      `Step type: ${step.type}`
+      "Step type:",
+      step.type
     );
 
     console.log(
-      `Step order: ${step.step_order}`
+      "Step order:",
+      step.step_order
     );
+
 
     // ========================================================
     // 5. APPROVAL GATE
+    // ========================================================
+    //
+    // Approval steps pause the workflow.
+    //
+    // IMPORTANT:
+    //
+    // We return immediately here.
+    //
+    // approveStep later creates the next pending
+    // step_run, which triggers this function again.
+    //
     // ========================================================
 
     if (
       step.type ===
       "approval_gate"
     ) {
+
       const message =
         step.config?.message ||
         "Approval required to continue this workflow.";
+
 
       await pauseApprovalGate(
         graphqlRequest,
         {
           stepRunId,
+
           workflowRunId,
+
           message,
         }
       );
 
+
       console.log(
-        `Workflow paused at approval gate: ${step.name}`
+        "========================================"
       );
 
+      console.log(
+        "WORKFLOW PAUSED"
+      );
+
+      console.log(
+        "Approval step:",
+        step.name
+      );
+
+      console.log(
+        "Step run:",
+        stepRunId
+      );
+
+      console.log(
+        "========================================"
+      );
+
+
       return res.status(200).json({
+
         success: true,
 
         message:
@@ -222,7 +333,9 @@ export default async (req, res) => {
         approval_required:
           true,
       });
+
     }
+
 
     // ========================================================
     // 6. EXECUTE CURRENT STEP
@@ -230,7 +343,9 @@ export default async (req, res) => {
 
     let stepOutput;
 
+
     try {
+
       // ======================================================
       // LLM
       // ======================================================
@@ -239,23 +354,31 @@ export default async (req, res) => {
         step.type ===
         "llm"
       ) {
+
         if (
           !process.env.OPENROUTER_API_KEY
         ) {
+
           throw new Error(
             "OPENROUTER_API_KEY is not configured"
           );
+
         }
+
 
         stepOutput =
           await executeLLMStep(
             step,
+
             stepInput,
+
             {
               getRemainingTime,
             }
           );
+
       }
+
 
       // ======================================================
       // HTTP REQUEST
@@ -265,31 +388,41 @@ export default async (req, res) => {
         step.type ===
         "http_request"
       ) {
+
         stepOutput =
           await executeHttpStep(
             step,
+
             stepInput,
+
             {
               getRemainingTime,
             }
           );
+
       }
 
+
       // ======================================================
-      // DB WRITE
+      // DATABASE WRITE
       // ======================================================
 
       else if (
         step.type ===
         "db_write"
       ) {
+
         stepOutput =
           await executeDbWriteStep(
             graphqlRequest,
+
             stepRunId,
+
             stepInput
           );
+
       }
+
 
       // ======================================================
       // CONDITIONAL BRANCH
@@ -299,11 +432,14 @@ export default async (req, res) => {
         step.type ===
         "conditional_branch"
       ) {
+
         stepOutput =
           executeConditionalStep(
             step,
+
             stepInput
           );
+
 
         console.log(
           "========================================"
@@ -334,32 +470,64 @@ export default async (req, res) => {
         );
 
         console.log(
-          "Selected step:",
+          "TRUE step:",
+          stepOutput.true_step_id
+        );
+
+        console.log(
+          "FALSE step:",
+          stepOutput.false_step_id
+        );
+
+        console.log(
+          "SELECTED step:",
           stepOutput.selected_step_id
         );
 
         console.log(
           "========================================"
         );
+
       }
+
 
       // ======================================================
       // UNSUPPORTED STEP
       // ======================================================
 
       else {
+
         throw new Error(
           `Unsupported step type: ${step.type}`
         );
+
       }
 
-    } catch (stepError) {
+
+    } catch (
+      stepError
+    ) {
+
       // ======================================================
       // STEP FAILED
       // ======================================================
 
       console.error(
-        `Step failed: ${step.name}`
+        "========================================"
+      );
+
+      console.error(
+        "STEP FAILED"
+      );
+
+      console.error(
+        "Step:",
+        step.name
+      );
+
+      console.error(
+        "Step run:",
+        stepRunId
       );
 
       console.error(
@@ -367,12 +535,19 @@ export default async (req, res) => {
         stepError
       );
 
+      console.error(
+        "========================================"
+      );
+
+
       const errorMessage =
         stepError?.message ||
         "Unknown step error";
 
+
       const maxAttempts =
         getMaxAttempts();
+
 
       // ======================================================
       // RETRY AVAILABLE
@@ -383,29 +558,37 @@ export default async (req, res) => {
           currentAttempt
         )
       ) {
+
         const nextAttempt =
           getNextAttempt(
             currentAttempt
           );
 
+
         console.log(
           `Retry available: ${nextAttempt + 1}/${maxAttempts}`
         );
 
+
         try {
+
           // --------------------------------------------------
-          // Mark current step as failed
+          // Mark current step failed
           // --------------------------------------------------
 
           await markStepFailed(
             graphqlRequest,
+
             stepRunId,
+
             errorMessage,
+
             currentAttempt
           );
 
+
           // --------------------------------------------------
-          // Preserve original input
+          // Preserve input
           // --------------------------------------------------
 
           const retryInput =
@@ -413,8 +596,9 @@ export default async (req, res) => {
               stepInput
             );
 
+
           // --------------------------------------------------
-          // Create NEW step run
+          // Create retry step run
           // --------------------------------------------------
 
           const retryStepRun =
@@ -433,17 +617,24 @@ export default async (req, res) => {
               }
             );
 
-          console.log(
-            "Retry step_run created:"
-          );
 
           console.log(
-            JSON.stringify(
-              retryStepRun
-            )
+            "Retry step_run created:",
+            retryStepRun?.id
           );
+
+
+          // --------------------------------------------------
+          // IMPORTANT
+          //
+          // The new step_run has status "pending".
+          //
+          // Hasura Event Trigger should execute this
+          // function again.
+          // --------------------------------------------------
 
           return res.status(200).json({
+
             success: true,
 
             message:
@@ -471,13 +662,18 @@ export default async (req, res) => {
               errorMessage,
           });
 
-        } catch (retryError) {
+        } catch (
+          retryError
+        ) {
+
           console.error(
             "Could not create retry:",
             retryError
           );
 
+
           try {
+
             await failExecution(
               graphqlRequest,
 
@@ -490,14 +686,21 @@ export default async (req, res) => {
 
               currentAttempt
             );
-          } catch (dbError) {
+
+          } catch (
+            dbError
+          ) {
+
             console.error(
               "Could not mark workflow failed:",
               dbError
             );
+
           }
 
+
           return res.status(200).json({
+
             success: false,
 
             message:
@@ -516,8 +719,11 @@ export default async (req, res) => {
             status:
               "failed",
           });
+
         }
+
       }
+
 
       // ======================================================
       // NO RETRIES LEFT
@@ -527,7 +733,9 @@ export default async (req, res) => {
         `No retries remaining for ${step.name}`
       );
 
+
       try {
+
         await failExecution(
           graphqlRequest,
 
@@ -539,14 +747,21 @@ export default async (req, res) => {
 
           currentAttempt
         );
-      } catch (dbError) {
+
+      } catch (
+        dbError
+      ) {
+
         console.error(
           "Could not update final failure:",
           dbError
         );
+
       }
 
+
       return res.status(200).json({
+
         success: false,
 
         message:
@@ -570,89 +785,116 @@ export default async (req, res) => {
         status:
           "failed",
       });
+
     }
 
+
     // ========================================================
-    // 7. CONDITIONAL BRANCH
+    // 7. VALIDATE STEP OUTPUT
+    // ========================================================
+
+    if (
+      stepOutput ===
+      undefined
+    ) {
+
+      throw new Error(
+        `Step "${step.name}" returned no output`
+      );
+
+    }
+
+
+    console.log(
+      "Step output:",
+      JSON.stringify(
+        stepOutput
+      )
+    );
+
+
+    // ========================================================
+    // 8. CONDITIONAL BRANCH
     //
     // IMPORTANT:
-    // A conditional step MUST NOT use step_order.
-    // It must ONLY use the selected branch.
+    //
+    // A conditional step must ONLY execute the selected
+    // branch.
+    //
+    // It must NOT call getNextStep().
+    //
     // ========================================================
 
     if (
       step.type ===
       "conditional_branch"
     ) {
+
       const selectedStepId =
         stepOutput.selected_step_id;
 
-      console.log(
-        "Conditional result:",
-        stepOutput.result
-      );
-
-      console.log(
-        "TRUE step:",
-        stepOutput.true_step_id
-      );
-
-      console.log(
-        "FALSE step:",
-        stepOutput.false_step_id
-      );
-
-      console.log(
-        "SELECTED step:",
-        selectedStepId
-      );
 
       if (!selectedStepId) {
+
         throw new Error(
           `Conditional branch "${step.name}" does not define the selected next step`
         );
+
       }
 
+
+      console.log(
+        "Conditional selected step:",
+        selectedStepId
+      );
+
+
       // ------------------------------------------------------
-      // Load ONLY the selected branch.
+      // Load selected branch
       // ------------------------------------------------------
 
       const nextStep =
         await getStepById(
           graphqlRequest,
+
           selectedStepId
         );
 
+
       if (!nextStep) {
+
         throw new Error(
           `Selected conditional step ${selectedStepId} could not be found`
         );
+
       }
 
+
       // ------------------------------------------------------
-      // Security:
-      // Conditional branches cannot jump
-      // across workflows.
+      // Security
+      //
+      // Branch cannot jump to another workflow.
       // ------------------------------------------------------
 
       if (
         nextStep.workflow_id !==
         step.workflow_id
       ) {
+
         throw new Error(
           "Conditional branch cannot jump to a step in another workflow"
         );
+
       }
+
 
       console.log(
         `Conditional branch selected: ${nextStep.name}`
       );
 
+
       // ------------------------------------------------------
-      // Create ONLY the selected branch.
-      //
-      // DO NOT call getNextStep().
-      // DO NOT execute the other branch.
+      // Create selected branch only
       // ------------------------------------------------------
 
       await completeAndCreateNext(
@@ -670,6 +912,7 @@ export default async (req, res) => {
         }
       );
 
+
       console.log(
         `Completed conditional step: ${step.name}`
       );
@@ -678,7 +921,9 @@ export default async (req, res) => {
         `Selected branch created: ${nextStep.name}`
       );
 
+
       return res.status(200).json({
+
         success: true,
 
         message:
@@ -708,12 +953,21 @@ export default async (req, res) => {
         status:
           "running",
       });
+
     }
 
+
     // ========================================================
-    // 8. NORMAL STEP → NEXT STEP
+    // 9. NORMAL STEP → NEXT STEP
     //
-    // This section is ONLY for non-conditional steps.
+    // This handles:
+    //
+    // - llm
+    // - http_request
+    // - db_write
+    //
+    // Approval gates were already handled above.
+    // Conditional branches were already handled above.
     // ========================================================
 
     const nextStep =
@@ -725,18 +979,36 @@ export default async (req, res) => {
         step.step_order
       );
 
+
     if (nextStep) {
+
       console.log(
-        "Normal workflow progression"
+        "========================================"
       );
 
       console.log(
-        `Current step: ${step.name}`
+        "NORMAL WORKFLOW PROGRESSION"
       );
 
       console.log(
-        `Next step: ${nextStep.name}`
+        "Current step:",
+        step.name
       );
+
+      console.log(
+        "Next step:",
+        nextStep.name
+      );
+
+      console.log(
+        "Next step type:",
+        nextStep.type
+      );
+
+      console.log(
+        "========================================"
+      );
+
 
       await completeAndCreateNext(
         graphqlRequest,
@@ -753,6 +1025,7 @@ export default async (req, res) => {
         }
       );
 
+
       console.log(
         `Completed: ${step.name}`
       );
@@ -761,7 +1034,19 @@ export default async (req, res) => {
         `Next step created: ${nextStep.name}`
       );
 
+
+      // ------------------------------------------------------
+      // IMPORTANT
+      //
+      // completeAndCreateNext creates the next step_run
+      // with status "pending".
+      //
+      // Your Hasura Event Trigger should then invoke
+      // executeWorkflowStep again.
+      // ------------------------------------------------------
+
       return res.status(200).json({
+
         success: true,
 
         message:
@@ -788,11 +1073,36 @@ export default async (req, res) => {
         status:
           "running",
       });
+
     }
 
+
     // ========================================================
-    // 9. FINAL STEP
+    // 10. FINAL STEP
     // ========================================================
+    //
+    // No next step means this was the final step.
+    //
+    // Complete:
+    //
+    // 1. step_run
+    // 2. workflow_run
+    // 3. organization quota
+    //
+    // ========================================================
+
+    const organizationId =
+      step.workflow?.organization?.id;
+
+
+    if (!organizationId) {
+
+      throw new Error(
+        "Organization ID could not be resolved for final workflow step"
+      );
+
+    }
+
 
     await completeWorkflow(
       graphqlRequest,
@@ -804,33 +1114,45 @@ export default async (req, res) => {
         output:
           stepOutput,
 
-        organizationId:
-          step.workflow?.organization?.id,
+        organizationId,
       }
     );
 
+
     console.log(
-      `Final step completed: ${step.name}`
+      "========================================"
     );
 
     console.log(
-      `Workflow completed: ${workflowRunId}`
+      "WORKFLOW COMPLETED"
+    );
+
+    console.log(
+      "Workflow run:",
+      workflowRunId
+    );
+
+    console.log(
+      "Final step:",
+      step.name
     );
 
     console.log(
       "Organization:",
-      step.workflow?.organization?.id
+      organizationId
     );
 
     console.log(
-      "Organization quota incremented by 1"
+      "Quota incremented"
     );
 
     console.log(
       "========================================"
     );
 
+
     return res.status(200).json({
+
       success: true,
 
       message:
@@ -852,25 +1174,45 @@ export default async (req, res) => {
         "completed",
     });
 
-  } catch (error) {
+
+  } catch (
+    error
+  ) {
+
     // ========================================================
     // GLOBAL FUNCTION ERROR
     // ========================================================
 
     console.error(
-      "Function error:",
+      "========================================"
+    );
+
+    console.error(
+      "EXECUTE WORKFLOW STEP ERROR"
+    );
+
+    console.error(
       error
     );
 
+    console.error(
+      "========================================"
+    );
+
+
     return res.status(500).json({
+
       success: false,
 
       message:
+        error?.message ||
         "Internal server error",
 
       error:
         error?.message ||
         "Unknown error",
     });
+
   }
+
 };

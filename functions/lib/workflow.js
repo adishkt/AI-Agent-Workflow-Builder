@@ -21,6 +21,9 @@ export async function getCurrentStep(
         config
 
         workflow {
+          id
+          org_id
+
           organization {
             id
           }
@@ -39,7 +42,7 @@ export async function getCurrentStep(
     );
 
   const step =
-    data.workflow_steps_by_pk;
+    data?.workflow_steps_by_pk;
 
   if (!step) {
     throw new Error(
@@ -105,7 +108,7 @@ export async function getNextStep(
     );
 
   return (
-    data.workflow_steps?.[0] ||
+    data?.workflow_steps?.[0] ||
     null
   );
 }
@@ -146,7 +149,7 @@ export async function getStepById(
     );
 
   const step =
-    data.workflow_steps_by_pk;
+    data?.workflow_steps_by_pk;
 
   if (!step) {
     throw new Error(
@@ -193,24 +196,28 @@ export async function markStepFailed(
     }
   `;
 
-  return graphqlRequest(
-    mutation,
-    {
-      step_id:
-        stepRunId,
+  const data =
+    await graphqlRequest(
+      mutation,
+      {
+        step_id:
+          stepRunId,
 
-      error:
-        errorMessage,
+        error:
+          errorMessage,
 
-      attempt_count:
-        attemptCount,
-    }
-  );
+        attempt_count:
+          attemptCount,
+      }
+    );
+
+  return data?.update_step_runs_by_pk ||
+    null;
 }
 
 
 // ============================================================
-// PERMANENT FAILURE
+// PERMANENT WORKFLOW FAILURE
 // ============================================================
 
 export async function failExecution(
@@ -262,22 +269,25 @@ export async function failExecution(
     }
   `;
 
-  return graphqlRequest(
-    mutation,
-    {
-      step_id:
-        stepRunId,
+  const data =
+    await graphqlRequest(
+      mutation,
+      {
+        step_id:
+          stepRunId,
 
-      workflow_run_id:
-        workflowRunId,
+        workflow_run_id:
+          workflowRunId,
 
-      error:
-        errorMessage,
+        error:
+          errorMessage,
 
-      attempt_count:
-        attemptCount,
-    }
-  );
+        attempt_count:
+          attemptCount,
+      }
+    );
+
+  return data;
 }
 
 
@@ -321,6 +331,8 @@ export async function createRetryStepRun(
         }
       ) {
         id
+        workflow_run_id
+        workflow_step_id
         status
         attempt_count
         input
@@ -341,11 +353,21 @@ export async function createRetryStepRun(
         attempt_count:
           attemptCount,
 
-        input,
+        input:
+          input || {},
       }
     );
 
-  return data.insert_step_runs_one;
+  const stepRun =
+    data?.insert_step_runs_one;
+
+  if (!stepRun) {
+    throw new Error(
+      "Retry step run could not be created"
+    );
+  }
+
+  return stepRun;
 }
 
 
@@ -362,6 +384,24 @@ export async function completeAndCreateNext(
     output,
   }
 ) {
+  if (!stepRunId) {
+    throw new Error(
+      "stepRunId is required"
+    );
+  }
+
+  if (!workflowRunId) {
+    throw new Error(
+      "workflowRunId is required"
+    );
+  }
+
+  if (!nextStepId) {
+    throw new Error(
+      "nextStepId is required"
+    );
+  }
+
   const mutation = `
     mutation CompleteAndCreateNext(
       $step_id: uuid!
@@ -377,19 +417,17 @@ export async function completeAndCreateNext(
         }
 
         _set: {
-          status:
-            "completed"
-
-          output:
-            $output
-
-          error:
-            null
+          status: "completed"
+          output: $output
+          error: null
         }
       ) {
         id
+        workflow_run_id
+        workflow_step_id
         status
         output
+        error
       }
 
       insert_step_runs_one(
@@ -403,37 +441,47 @@ export async function completeAndCreateNext(
           status:
             "pending"
 
+          attempt_count:
+            0
+
           input:
             $input
         }
       ) {
         id
+        workflow_run_id
+        workflow_step_id
         status
+        attempt_count
         input
       }
     }
   `;
 
-  return graphqlRequest(
-    mutation,
-    {
-      step_id:
-        stepRunId,
+  const data =
+    await graphqlRequest(
+      mutation,
+      {
+        step_id:
+          stepRunId,
 
-      workflow_run_id:
-        workflowRunId,
+        workflow_run_id:
+          workflowRunId,
 
-      next_workflow_step_id:
-        nextStepId,
+        next_workflow_step_id:
+          nextStepId,
 
-      output,
+        output:
+          output ?? null,
 
-      input: {
-        previous_output:
-          output,
-      },
-    }
-  );
+        input: {
+          previous_output:
+            output ?? null,
+        },
+      }
+    );
+
+  return data;
 }
 
 
@@ -450,6 +498,18 @@ export async function completeWorkflow(
     organizationId,
   }
 ) {
+  if (!stepRunId) {
+    throw new Error(
+      "stepRunId is required to complete workflow"
+    );
+  }
+
+  if (!workflowRunId) {
+    throw new Error(
+      "workflowRunId is required to complete workflow"
+    );
+  }
+
   if (!organizationId) {
     throw new Error(
       "Organization ID is required to complete workflow"
@@ -470,19 +530,17 @@ export async function completeWorkflow(
         }
 
         _set: {
-          status:
-            "completed"
-
-          output:
-            $output
-
-          error:
-            null
+          status: "completed"
+          output: $output
+          error: null
         }
       ) {
         id
+        workflow_run_id
+        workflow_step_id
         status
         output
+        error
       }
 
       update_workflow_runs_by_pk(
@@ -491,26 +549,22 @@ export async function completeWorkflow(
         }
 
         _set: {
-          status:
-            "completed"
-
-          error:
-            null
+          status: "completed"
+          error: null
         }
       ) {
         id
         status
+        error
       }
 
       update_organizations_by_pk(
         pk_columns: {
-          id:
-            $organization_id
+          id: $organization_id
         }
 
         _inc: {
-          quota_used:
-            1
+          quota_used: 1
         }
       ) {
         id
@@ -520,21 +574,25 @@ export async function completeWorkflow(
     }
   `;
 
-  return graphqlRequest(
-    mutation,
-    {
-      step_id:
-        stepRunId,
+  const data =
+    await graphqlRequest(
+      mutation,
+      {
+        step_id:
+          stepRunId,
 
-      workflow_run_id:
-        workflowRunId,
+        workflow_run_id:
+          workflowRunId,
 
-      organization_id:
-        organizationId,
+        organization_id:
+          organizationId,
 
-      output,
-    }
-  );
+        output:
+          output ?? null,
+      }
+    );
+
+  return data;
 }
 
 
@@ -550,6 +608,18 @@ export async function pauseApprovalGate(
     message,
   }
 ) {
+  if (!stepRunId) {
+    throw new Error(
+      "stepRunId is required"
+    );
+  }
+
+  if (!workflowRunId) {
+    throw new Error(
+      "workflowRunId is required"
+    );
+  }
+
   const mutation = `
     mutation PauseApprovalGate(
       $step_id: uuid!
@@ -563,14 +633,9 @@ export async function pauseApprovalGate(
         }
 
         _set: {
-          status:
-            "paused"
-
-          output:
-            $output
-
-          error:
-            null
+          status: "paused"
+          output: $output
+          error: null
         }
       ) {
         id
@@ -584,11 +649,8 @@ export async function pauseApprovalGate(
         }
 
         _set: {
-          status:
-            "paused"
-
-          error:
-            null
+          status: "paused"
+          error: null
         }
       ) {
         id
@@ -597,25 +659,28 @@ export async function pauseApprovalGate(
     }
   `;
 
-  return graphqlRequest(
-    mutation,
-    {
-      step_id:
-        stepRunId,
+  const data =
+    await graphqlRequest(
+      mutation,
+      {
+        step_id:
+          stepRunId,
 
-      workflow_run_id:
-        workflowRunId,
+        workflow_run_id:
+          workflowRunId,
 
-      output: {
-        status:
-          "awaiting_approval",
+        output: {
+          status:
+            "awaiting_approval",
 
-        message:
-          message ||
-          "This workflow is waiting for approval.",
-      },
-    }
-  );
+          message:
+            message ||
+            "This workflow is waiting for approval.",
+        },
+      }
+    );
+
+  return data;
 }
 
 
@@ -630,6 +695,22 @@ export async function approvePausedStep(
     userId,
   }
 ) {
+  // ----------------------------------------------------------
+  // VALIDATE INPUT
+  // ----------------------------------------------------------
+
+  if (!stepRunId) {
+    throw new Error(
+      "stepRunId is required"
+    );
+  }
+
+  if (!userId) {
+    throw new Error(
+      "userId is required"
+    );
+  }
+
 
   // ----------------------------------------------------------
   // 1. GET STEP RUN
@@ -647,6 +728,9 @@ export async function approvePausedStep(
         workflow_step_id
         status
         input
+        output
+        approved_by
+        approved_at
       }
     }
   `;
@@ -661,7 +745,7 @@ export async function approvePausedStep(
     );
 
   const stepRun =
-    stepRunData.step_runs_by_pk;
+    stepRunData?.step_runs_by_pk;
 
   if (!stepRun) {
     throw new Error(
@@ -688,40 +772,11 @@ export async function approvePausedStep(
   // 3. GET WORKFLOW STEP
   // ----------------------------------------------------------
 
-  const stepQuery = `
-    query GetWorkflowStep(
-      $step_id: uuid!
-    ) {
-      workflow_steps_by_pk(
-        id: $step_id
-      ) {
-        id
-        workflow_id
-        step_order
-        name
-        type
-        config
-      }
-    }
-  `;
-
-  const stepData =
-    await graphqlRequest(
-      stepQuery,
-      {
-        step_id:
-          stepRun.workflow_step_id,
-      }
-    );
-
   const step =
-    stepData.workflow_steps_by_pk;
-
-  if (!step) {
-    throw new Error(
-      "Workflow step not found"
+    await getCurrentStep(
+      graphqlRequest,
+      stepRun.workflow_step_id
     );
-  }
 
 
   // ----------------------------------------------------------
@@ -766,7 +821,7 @@ export async function approvePausedStep(
     );
 
   const workflow =
-    workflowData.workflows_by_pk;
+    workflowData?.workflows_by_pk;
 
   if (!workflow) {
     throw new Error(
@@ -817,7 +872,7 @@ export async function approvePausedStep(
     );
 
   const membership =
-    membershipData.org_members?.[0];
+    membershipData?.org_members?.[0];
 
   if (!membership) {
     throw new Error(
@@ -831,10 +886,8 @@ export async function approvePausedStep(
   // ----------------------------------------------------------
 
   if (
-    membership.role !==
-      "owner" &&
-    membership.role !==
-      "editor"
+    membership.role !== "owner" &&
+    membership.role !== "editor"
   ) {
     throw new Error(
       "Only an owner or editor can approve this step"
@@ -849,9 +902,7 @@ export async function approvePausedStep(
   const nextStep =
     await getNextStep(
       graphqlRequest,
-
       step.workflow_id,
-
       step.step_order
     );
 
@@ -860,15 +911,17 @@ export async function approvePausedStep(
   // 9. CREATE APPROVAL OUTPUT
   // ----------------------------------------------------------
 
+  const approvedAt =
+    new Date().toISOString();
+
   const approvalOutput = {
-    approved:
-      true,
+    approved: true,
 
     approved_by:
       userId,
 
     approved_at:
-      new Date().toISOString(),
+      approvedAt,
   };
 
 
@@ -911,8 +964,8 @@ export async function approvePausedStep(
         $next_step_id: uuid!
         $approved_by: uuid!
         $approved_at: timestamptz!
-        $output: jsonb
-        $input: jsonb
+        $output: jsonb!
+        $input: jsonb!
       ) {
 
         update_step_runs_by_pk(
@@ -921,8 +974,7 @@ export async function approvePausedStep(
           }
 
           _set: {
-            status:
-              "completed"
+            status: "completed"
 
             approved_by:
               $approved_by
@@ -942,6 +994,7 @@ export async function approvePausedStep(
           approved_by
           approved_at
           output
+          error
         }
 
         update_workflow_runs_by_pk(
@@ -950,15 +1003,13 @@ export async function approvePausedStep(
           }
 
           _set: {
-            status:
-              "running"
-
-            error:
-              null
+            status: "running"
+            error: null
           }
         ) {
           id
           status
+          error
         }
 
         insert_step_runs_one(
@@ -972,6 +1023,9 @@ export async function approvePausedStep(
             status:
               "pending"
 
+            attempt_count:
+              0
+
             input:
               $input
           }
@@ -980,6 +1034,7 @@ export async function approvePausedStep(
           status
           workflow_run_id
           workflow_step_id
+          attempt_count
           input
         }
       }
@@ -1002,7 +1057,7 @@ export async function approvePausedStep(
             userId,
 
           approved_at:
-            approvalOutput.approved_at,
+            approvedAt,
 
           output:
             approvalOutput,
@@ -1023,6 +1078,9 @@ export async function approvePausedStep(
 
       next_step_id:
         nextStep.id,
+
+      status:
+        "running",
     };
   }
 
@@ -1037,7 +1095,7 @@ export async function approvePausedStep(
       $workflow_run_id: uuid!
       $approved_by: uuid!
       $approved_at: timestamptz!
-      $output: jsonb
+      $output: jsonb!
     ) {
 
       update_step_runs_by_pk(
@@ -1046,8 +1104,7 @@ export async function approvePausedStep(
         }
 
         _set: {
-          status:
-            "completed"
+          status: "completed"
 
           approved_by:
             $approved_by
@@ -1067,6 +1124,7 @@ export async function approvePausedStep(
         approved_by
         approved_at
         output
+        error
       }
 
       update_workflow_runs_by_pk(
@@ -1075,15 +1133,13 @@ export async function approvePausedStep(
         }
 
         _set: {
-          status:
-            "completed"
-
-          error:
-            null
+          status: "completed"
+          error: null
         }
       ) {
         id
         status
+        error
       }
     }
   `;
@@ -1102,7 +1158,7 @@ export async function approvePausedStep(
           userId,
 
         approved_at:
-          approvalOutput.approved_at,
+          approvedAt,
 
         output:
           approvalOutput,
