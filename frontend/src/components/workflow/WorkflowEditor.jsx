@@ -8,6 +8,7 @@ import {
   deleteWorkflowStep,
   getCurrentUserRole,
   reorderWorkflowSteps,
+  triggerWorkflowRun,
 } from "../../lib/graphql";
 
 import WorkflowStepForm from "./WorkflowStepForm";
@@ -28,27 +29,15 @@ function WorkflowEditor({
 }) {
 
   // ==========================================================
-  // SAFETY CHECK
-  // ==========================================================
-
-  if (!workflow) {
-    return (
-      <section className="workflow-editor">
-        <p>Loading workflow...</p>
-      </section>
-    );
-  }
-
-
-  // ==========================================================
   // STEPS
   // ==========================================================
 
   const [steps, setSteps] = useState(
-    [...(workflow.workflow_steps || [])].sort(
-      (a, b) =>
-        a.step_order - b.step_order
-    )
+    () =>
+      [...(workflow?.workflow_steps || [])].sort(
+        (a, b) =>
+          a.step_order - b.step_order
+      )
   );
 
 
@@ -78,13 +67,46 @@ function WorkflowEditor({
   const [role, setRole] =
     useState("loading");
 
-
   const [roleLoading, setRoleLoading] =
     useState(true);
 
 
   // ==========================================================
-  // LOAD ROLE
+  // RUN WORKFLOW STATE
+  // ==========================================================
+
+  const [runningWorkflow, setRunningWorkflow] =
+    useState(false);
+
+  const [runResult, setRunResult] =
+    useState(null);
+
+  const [runError, setRunError] =
+    useState("");
+
+
+  // ==========================================================
+  // UPDATE STEPS WHEN WORKFLOW CHANGES
+  // ==========================================================
+
+  useEffect(() => {
+
+    if (!workflow) {
+      return;
+    }
+
+    setSteps(
+      [...(workflow.workflow_steps || [])].sort(
+        (a, b) =>
+          a.step_order - b.step_order
+      )
+    );
+
+  }, [workflow]);
+
+
+  // ==========================================================
+  // LOAD CURRENT USER ROLE
   // ==========================================================
 
   useEffect(() => {
@@ -98,8 +120,10 @@ function WorkflowEditor({
 
         setRoleLoading(true);
 
+
         const currentRole =
           await getCurrentUserRole();
+
 
         console.log(
           "WorkflowEditor role:",
@@ -126,6 +150,7 @@ function WorkflowEditor({
         if (mounted) {
 
           setRole("viewer");
+
 
           setError(
             err?.message ||
@@ -172,6 +197,12 @@ function WorkflowEditor({
     role === "owner";
 
 
+  const canRun =
+    role === "owner" ||
+    role === "editor" ||
+    role === "viewer";
+
+
   // ==========================================================
   // SORT STEPS
   // ==========================================================
@@ -188,7 +219,7 @@ function WorkflowEditor({
 
 
   // ==========================================================
-  // CREATE / UPDATE STEP
+  // CREATE STEP
   // ==========================================================
 
   const handleStepCreated = (
@@ -212,6 +243,10 @@ function WorkflowEditor({
 
   };
 
+
+  // ==========================================================
+  // UPDATE STEP
+  // ==========================================================
 
   const handleStepUpdated = (
     updatedStep
@@ -240,7 +275,7 @@ function WorkflowEditor({
 
 
   // ==========================================================
-  // EDIT
+  // EDIT STEP
   // ==========================================================
 
   const handleEdit = (
@@ -272,7 +307,7 @@ function WorkflowEditor({
 
 
   // ==========================================================
-  // DELETE
+  // DELETE STEP
   // ==========================================================
 
   const handleDelete = async (
@@ -300,9 +335,6 @@ function WorkflowEditor({
       );
 
 
-      // Remove deleted step
-      // and renumber locally
-
       const remainingSteps =
         sortedSteps
           .filter(
@@ -323,8 +355,7 @@ function WorkflowEditor({
       );
 
 
-      // Persist new ordering
-      // to Hasura
+      // Persist the new ordering
 
       if (
         remainingSteps.length > 0
@@ -355,7 +386,7 @@ function WorkflowEditor({
 
 
   // ==========================================================
-  // MOVE UP
+  // MOVE STEP UP
   // ==========================================================
 
   const handleMoveUp = async (
@@ -404,7 +435,9 @@ function WorkflowEditor({
 
       setError("");
 
-      setSteps(reordered);
+      setSteps(
+        reordered
+      );
 
 
       await reorderWorkflowSteps(
@@ -425,8 +458,6 @@ function WorkflowEditor({
       );
 
 
-      // Restore previous order
-
       setSteps(
         sortedSteps
       );
@@ -437,7 +468,7 @@ function WorkflowEditor({
 
 
   // ==========================================================
-  // MOVE DOWN
+  // MOVE STEP DOWN
   // ==========================================================
 
   const handleMoveDown = async (
@@ -492,7 +523,9 @@ function WorkflowEditor({
 
       setError("");
 
-      setSteps(reordered);
+      setSteps(
+        reordered
+      );
 
 
       await reorderWorkflowSteps(
@@ -520,6 +553,105 @@ function WorkflowEditor({
     }
 
   };
+
+
+  // ==========================================================
+  // RUN WORKFLOW
+  // ==========================================================
+
+  const handleRunWorkflow = async () => {
+
+    if (!workflow?.id) {
+
+      setRunError(
+        "Workflow ID is missing."
+      );
+
+      return;
+
+    }
+
+
+    if (sortedSteps.length === 0) {
+
+      setRunError(
+        "Add at least one workflow step before running."
+      );
+
+      return;
+
+    }
+
+
+    try {
+
+      setRunningWorkflow(true);
+
+      setRunError("");
+
+      setRunResult(null);
+
+
+      console.log(
+        "Starting workflow:",
+        workflow.id
+      );
+
+
+      const result =
+        await triggerWorkflowRun(
+          workflow.id
+        );
+
+
+      console.log(
+        "Workflow run started:",
+        result
+      );
+
+
+      setRunResult(result);
+
+
+    } catch (err) {
+
+      console.error(
+        "Failed to run workflow:",
+        err
+      );
+
+
+      setRunError(
+        err?.message ||
+          "Failed to run workflow"
+      );
+
+    } finally {
+
+      setRunningWorkflow(false);
+
+    }
+
+  };
+
+
+  // ==========================================================
+  // SAFETY RENDER
+  // ==========================================================
+
+  if (!workflow) {
+
+    return (
+      <section className="workflow-editor">
+
+        <p>
+          Loading workflow...
+        </p>
+
+      </section>
+    );
+
+  }
 
 
   // ==========================================================
@@ -571,6 +703,38 @@ function WorkflowEditor({
               : role}
           </strong>
 
+
+          {/* ============================================== */}
+          {/* RUN WORKFLOW */}
+          {/* ============================================== */}
+
+          {canRun &&
+            !roleLoading && (
+
+              <button
+                type="button"
+                onClick={
+                  handleRunWorkflow
+                }
+                disabled={
+                  runningWorkflow ||
+                  sortedSteps.length ===
+                    0
+                }
+                style={{
+                  marginLeft:
+                    "20px",
+                }}
+              >
+
+                {runningWorkflow
+                  ? "Running..."
+                  : "▶ Run Workflow"}
+
+              </button>
+
+            )}
+
         </div>
 
       </div>
@@ -580,7 +744,7 @@ function WorkflowEditor({
 
 
       {/* ==================================================== */}
-      {/* ERROR */}
+      {/* GENERAL ERROR */}
       {/* ==================================================== */}
 
       {error && (
@@ -588,6 +752,68 @@ function WorkflowEditor({
         <p className="error">
           {error}
         </p>
+
+      )}
+
+
+      {/* ==================================================== */}
+      {/* RUN ERROR */}
+      {/* ==================================================== */}
+
+      {runError && (
+
+        <p className="error">
+          {runError}
+        </p>
+
+      )}
+
+
+      {/* ==================================================== */}
+      {/* RUN RESULT */}
+      {/* ==================================================== */}
+
+      {runResult && (
+
+        <div
+          className="workflow-run-result"
+        >
+
+          <h3>
+            Workflow Run
+          </h3>
+
+
+          <p>
+            <strong>
+              Status:
+            </strong>{" "}
+            {runResult.status ||
+              "Started"}
+          </p>
+
+
+          {runResult.run_id && (
+
+            <p>
+              <strong>
+                Run ID:
+              </strong>{" "}
+              {runResult.run_id}
+            </p>
+
+          )}
+
+
+          {runResult.message && (
+
+            <p>
+              {runResult.message}
+            </p>
+
+          )}
+
+        </div>
 
       )}
 
@@ -603,24 +829,33 @@ function WorkflowEditor({
         </h3>
 
 
-        {canEdit && !roleLoading && (
+        {/* ================================================ */}
+        {/* ADD STEP */}
+        {/* ================================================ */}
 
-          <button
-            type="button"
-            onClick={() => {
+        {canEdit &&
+          !roleLoading && (
 
-              setEditingStep(null);
+            <button
+              type="button"
+              onClick={() => {
 
-              setShowStepForm(true);
+                setEditingStep(
+                  null
+                );
 
-              setError("");
+                setShowStepForm(
+                  true
+                );
 
-            }}
-          >
-            + Add Step
-          </button>
+                setError("");
 
-        )}
+              }}
+            >
+              + Add Step
+            </button>
+
+          )}
 
       </div>
 
@@ -649,7 +884,7 @@ function WorkflowEditor({
 
 
                 {/* ========================================== */}
-                {/* HEADER */}
+                {/* STEP HEADER */}
                 {/* ========================================== */}
 
                 <div className="workflow-step-header">
@@ -697,7 +932,8 @@ function WorkflowEditor({
                             )
                           }
                           disabled={
-                            index === 0
+                            index ===
+                            0
                           }
                           title="Move up"
                         >
@@ -743,7 +979,9 @@ function WorkflowEditor({
                     )}
 
 
+                    {/* ====================================== */}
                     {/* DELETE */}
+                    {/* ====================================== */}
 
                     {canDelete && (
 
@@ -766,7 +1004,7 @@ function WorkflowEditor({
 
 
                 {/* ========================================== */}
-                {/* CONFIG */}
+                {/* TYPE */}
                 {/* ========================================== */}
 
                 <p>
@@ -777,6 +1015,10 @@ function WorkflowEditor({
                     step.type}
                 </p>
 
+
+                {/* ========================================== */}
+                {/* CONFIG */}
+                {/* ========================================== */}
 
                 <pre>
                   {JSON.stringify(
@@ -815,7 +1057,9 @@ function WorkflowEditor({
               sortedSteps.length + 1
             }
 
-            editingStep={null}
+            editingStep={
+              null
+            }
 
             onCreated={
               handleStepCreated
