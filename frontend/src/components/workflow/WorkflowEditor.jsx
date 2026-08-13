@@ -5,12 +5,14 @@ import {
 } from "react";
 
 import {
-  approveStep,
+  createWorkflowStep,
+  updateWorkflowStep,
   deleteWorkflowStep,
-  getCurrentUserRole,
-  getWorkflowRun,
   reorderWorkflowSteps,
   triggerWorkflowRun,
+  approveStep,
+  getWorkflowRun,
+  getCurrentUserRole,
 } from "../../lib/graphql";
 
 import WorkflowStepForm from "./WorkflowStepForm";
@@ -58,7 +60,7 @@ function WorkflowEditor({
 
 
   // ==========================================================
-  // ERROR
+  // GENERAL ERROR
   // ==========================================================
 
   const [error, setError] =
@@ -70,14 +72,14 @@ function WorkflowEditor({
   // ==========================================================
 
   const [role, setRole] =
-    useState("loading");
+    useState(null);
 
   const [roleLoading, setRoleLoading] =
     useState(true);
 
 
   // ==========================================================
-  // RUN WORKFLOW STATE
+  // RUN WORKFLOW
   // ==========================================================
 
   const [runningWorkflow, setRunningWorkflow] =
@@ -102,7 +104,7 @@ function WorkflowEditor({
 
 
   // ==========================================================
-  // APPROVAL STATE
+  // APPROVAL
   // ==========================================================
 
   const [approvingStepRunId, setApprovingStepRunId] =
@@ -136,13 +138,12 @@ function WorkflowEditor({
 
 
   // ==========================================================
-  // LOAD CURRENT USER ROLE
+  // LOAD CURRENT ORGANIZATION ROLE
   // ==========================================================
 
   useEffect(() => {
 
     let mounted = true;
-
 
     async function loadRole() {
 
@@ -150,22 +151,70 @@ function WorkflowEditor({
 
         setRoleLoading(true);
 
+        setError("");
+
+        const result =
+          await getCurrentUserRole();
+
+        console.log(
+          "WorkflowEditor getCurrentUserRole result:",
+          result
+        );
+
+
+        /*
+         * getCurrentUserRole() should normally return:
+         *
+         * "owner"
+         *
+         * But we also support:
+         *
+         * { role: "owner" }
+         *
+         * or:
+         *
+         * { membership: { role: "owner" } }
+         */
 
         const currentRole =
-          await getCurrentUserRole();
+          typeof result === "string"
+            ? result
+            : result?.role ||
+              result?.membership?.role ||
+              null;
 
 
         console.log(
-          "WorkflowEditor role:",
+          "WorkflowEditor CURRENT ROLE:",
           currentRole
         );
 
 
+        if (!currentRole) {
+
+          throw new Error(
+            "Organization role could not be determined"
+          );
+
+        }
+
+
+        if (
+          currentRole !== "owner" &&
+          currentRole !== "editor" &&
+          currentRole !== "viewer"
+        ) {
+
+          throw new Error(
+            `Unknown organization role: ${currentRole}`
+          );
+
+        }
+
+
         if (mounted) {
 
-          setRole(
-            currentRole
-          );
+          setRole(currentRole);
 
         }
 
@@ -177,12 +226,20 @@ function WorkflowEditor({
         );
 
 
+        /*
+         * IMPORTANT:
+         *
+         * DO NOT do:
+         *
+         * setRole("viewer")
+         *
+         * because that hides authentication /
+         * GraphQL role problems.
+         */
+
         if (mounted) {
 
-          setRole(
-            "viewer"
-          );
-
+          setRole(null);
 
           setError(
             err?.message ||
@@ -220,6 +277,27 @@ function WorkflowEditor({
   // PERMISSIONS
   // ==========================================================
 
+  /*
+   * OWNER
+   * - create
+   * - edit
+   * - delete
+   * - reorder
+   * - run
+   * - approve
+   *
+   * EDITOR
+   * - create
+   * - edit
+   * - reorder
+   * - run
+   * - approve
+   *
+   * VIEWER
+   * - view
+   * - run
+   */
+
   const canEdit =
     role === "owner" ||
     role === "editor";
@@ -233,6 +311,11 @@ function WorkflowEditor({
     role === "owner" ||
     role === "editor" ||
     role === "viewer";
+
+
+  const canApprove =
+    role === "owner" ||
+    role === "editor";
 
 
   // ==========================================================
@@ -251,7 +334,7 @@ function WorkflowEditor({
 
 
   // ==========================================================
-  // GET STEP RUN FOR WORKFLOW STEP
+  // GET STEP RUN FOR STEP
   // ==========================================================
 
   const getStepRunForStep = (
@@ -261,7 +344,6 @@ function WorkflowEditor({
     if (!runDetails?.stepRuns) {
       return null;
     }
-
 
     return (
       runDetails.stepRuns.find(
@@ -290,7 +372,6 @@ function WorkflowEditor({
     try {
 
       setRunLoading(true);
-
 
       const details =
         await getWorkflowRun(
@@ -329,8 +410,7 @@ function WorkflowEditor({
 
   };
 
-
-  // ==========================================================
+    // ==========================================================
   // POLL WORKFLOW RUN
   // ==========================================================
 
@@ -348,7 +428,7 @@ function WorkflowEditor({
     let mounted = true;
 
 
-    // Load immediately
+    // Initial load
 
     refreshWorkflowRun(
       runId
@@ -387,6 +467,28 @@ function WorkflowEditor({
               details
             );
 
+
+            /*
+             * Stop polling when the workflow
+             * reaches a final state.
+             */
+
+            const status =
+              details?.run?.status;
+
+
+            if (
+              status === "completed" ||
+              status === "failed" ||
+              status === "cancelled"
+            ) {
+
+              clearInterval(
+                interval
+              );
+
+            }
+
           } catch (err) {
 
             console.error(
@@ -417,7 +519,7 @@ function WorkflowEditor({
 
 
   // ==========================================================
-  // CREATE STEP
+  // STEP CREATED
   // ==========================================================
 
   const handleStepCreated = (
@@ -425,7 +527,6 @@ function WorkflowEditor({
   ) => {
 
     setError("");
-
 
     setSteps(
       (currentSteps) => [
@@ -447,7 +548,7 @@ function WorkflowEditor({
 
 
   // ==========================================================
-  // UPDATE STEP
+  // STEP UPDATED
   // ==========================================================
 
   const handleStepUpdated = (
@@ -488,6 +589,17 @@ function WorkflowEditor({
     step
   ) => {
 
+    if (!canEdit) {
+
+      setError(
+        "You do not have permission to edit workflow steps."
+      );
+
+      return;
+
+    }
+
+
     setError("");
 
     setEditingStep(
@@ -527,6 +639,17 @@ function WorkflowEditor({
   const handleDelete = async (
     step
   ) => {
+
+    if (!canDelete) {
+
+      setError(
+        "Only an owner can delete workflow steps."
+      );
+
+      return;
+
+    }
+
 
     const confirmed =
       window.confirm(
@@ -606,6 +729,11 @@ function WorkflowEditor({
   const handleMoveUp = async (
     step
   ) => {
+
+    if (!canEdit) {
+      return;
+    }
+
 
     const index =
       sortedSteps.findIndex(
@@ -690,6 +818,11 @@ function WorkflowEditor({
     step
   ) => {
 
+    if (!canEdit) {
+      return;
+    }
+
+
     const index =
       sortedSteps.findIndex(
         (item) =>
@@ -770,8 +903,7 @@ function WorkflowEditor({
 
   };
 
-
-  // ==========================================================
+    // ==========================================================
   // RUN WORKFLOW
   // ==========================================================
 
@@ -782,6 +914,17 @@ function WorkflowEditor({
 
         setRunError(
           "Workflow ID is missing."
+        );
+
+        return;
+
+      }
+
+
+      if (!canRun) {
+
+        setRunError(
+          "You do not have permission to run this workflow."
         );
 
         return;
@@ -878,6 +1021,17 @@ function WorkflowEditor({
       stepRun
     ) => {
 
+      if (!canApprove) {
+
+        setApprovalError(
+          "Only an owner or editor can approve a step."
+        );
+
+        return;
+
+      }
+
+
       if (!stepRun?.id) {
 
         setApprovalError(
@@ -929,8 +1083,6 @@ function WorkflowEditor({
           result
         );
 
-
-        // Immediately refresh
 
         if (
           runResult?.run_id
@@ -992,7 +1144,6 @@ function WorkflowEditor({
   return (
     <section className="workflow-editor">
 
-
       {/* ==================================================== */}
       {/* BACK */}
       {/* ==================================================== */}
@@ -1006,7 +1157,7 @@ function WorkflowEditor({
 
 
       {/* ==================================================== */}
-      {/* WORKFLOW HEADER */}
+      {/* HEADER */}
       {/* ==================================================== */}
 
       <div className="workflow-editor-header">
@@ -1031,13 +1182,9 @@ function WorkflowEditor({
             Role:{" "}
             {roleLoading
               ? "Loading..."
-              : role}
+              : role || "Unknown"}
           </strong>
 
-
-          {/* ============================================== */}
-          {/* RUN WORKFLOW */}
-          {/* ============================================== */}
 
           {canRun &&
             !roleLoading && (
@@ -1114,7 +1261,7 @@ function WorkflowEditor({
 
 
       {/* ==================================================== */}
-      {/* RUN RESULT */}
+      {/* WORKFLOW RUN RESULT */}
       {/* ==================================================== */}
 
       {runResult && (
@@ -1129,6 +1276,7 @@ function WorkflowEditor({
 
 
           <p>
+
             <strong>
               Status:
             </strong>{" "}
@@ -1143,6 +1291,7 @@ function WorkflowEditor({
           {runResult.run_id && (
 
             <p>
+
               <strong>
                 Run ID:
               </strong>{" "}
@@ -1177,7 +1326,7 @@ function WorkflowEditor({
 
 
       {/* ==================================================== */}
-      {/* STEP TITLE */}
+      {/* TITLE */}
       {/* ==================================================== */}
 
       <div className="workflow-editor-title">
@@ -1186,10 +1335,6 @@ function WorkflowEditor({
           Workflow Steps
         </h3>
 
-
-        {/* ================================================ */}
-        {/* ADD STEP */}
-        {/* ================================================ */}
 
         {canEdit &&
           !roleLoading && (
@@ -1216,9 +1361,7 @@ function WorkflowEditor({
           )}
 
       </div>
-
-
-      {/* ==================================================== */}
+            {/* ==================================================== */}
       {/* STEPS */}
       {/* ==================================================== */}
 
@@ -1267,7 +1410,6 @@ function WorkflowEditor({
                   className="workflow-step-card"
                 >
 
-
                   {/* ====================================== */}
                   {/* STEP HEADER */}
                   {/* ====================================== */}
@@ -1302,7 +1444,6 @@ function WorkflowEditor({
 
                     <div className="workflow-step-actions">
 
-
                       {canEdit && (
 
                         <>
@@ -1317,8 +1458,7 @@ function WorkflowEditor({
                               )
                             }
                             disabled={
-                              index ===
-                              0
+                              index === 0
                             }
                             title="Move up"
                           >
@@ -1469,9 +1609,11 @@ function WorkflowEditor({
                         >
 
                           <p>
+
                             <strong>
                               ⏸ Waiting for approval
                             </strong>
+
                           </p>
 
 
@@ -1489,7 +1631,7 @@ function WorkflowEditor({
                           )}
 
 
-                          {canEdit ? (
+                          {canApprove ? (
 
                             <button
                               type="button"
@@ -1504,10 +1646,12 @@ function WorkflowEditor({
                               }
                             >
 
-                              {approvingStepRunId ===
-                              stepRun.id
-                                ? "Approving..."
-                                : "✅ Approve"}
+                              {
+                                approvingStepRunId ===
+                                stepRun.id
+                                  ? "Approving..."
+                                  : "✅ Approve"
+                              }
 
                             </button>
 
