@@ -42,7 +42,8 @@ export async function getCurrentStep(
     await graphqlRequest(
       query,
       {
-        step_id: workflowStepId,
+        step_id:
+          workflowStepId,
       }
     );
 
@@ -96,7 +97,8 @@ export async function getWorkflowRun(
     await graphqlRequest(
       query,
       {
-        run_id: workflowRunId,
+        run_id:
+          workflowRunId,
       }
     );
 
@@ -173,8 +175,101 @@ export async function getNextStep(
     await graphqlRequest(
       query,
       {
-        workflow_id: workflowId,
-        step_order: stepOrder,
+        workflow_id:
+          workflowId,
+
+        step_order:
+          stepOrder,
+      }
+    );
+
+  return (
+    data?.workflow_steps?.[0] ||
+    null
+  );
+}
+
+
+// ============================================================
+// GET NEXT STEP AFTER A SPECIFIC ORDER
+// ============================================================
+//
+// Used for conditional branches.
+//
+// Example:
+//
+// Step 1 -> Conditional
+// Step 2 -> TRUE
+// Step 3 -> FALSE
+// Step 4 -> Common
+//
+// After TRUE/FALSE branch finishes, this function can
+// jump directly to Step 4 instead of executing the sibling
+// branch.
+//
+// ============================================================
+
+export async function getNextStepAfterOrder(
+  graphqlRequest,
+  workflowId,
+  stepOrder
+) {
+  if (!workflowId) {
+    throw new Error(
+      "workflowId is required"
+    );
+  }
+
+  if (
+    stepOrder === undefined ||
+    stepOrder === null
+  ) {
+    throw new Error(
+      "stepOrder is required"
+    );
+  }
+
+  const query = `
+    query GetNextStepAfterOrder(
+      $workflow_id: uuid!
+      $step_order: Int!
+    ) {
+      workflow_steps(
+        where: {
+          workflow_id: {
+            _eq: $workflow_id
+          }
+
+          step_order: {
+            _gt: $step_order
+          }
+        }
+
+        order_by: {
+          step_order: asc
+        }
+
+        limit: 1
+      ) {
+        id
+        workflow_id
+        step_order
+        name
+        type
+        config
+      }
+    }
+  `;
+
+  const data =
+    await graphqlRequest(
+      query,
+      {
+        workflow_id:
+          workflowId,
+
+        step_order:
+          stepOrder,
       }
     );
 
@@ -220,7 +315,8 @@ export async function getStepById(
     await graphqlRequest(
       query,
       {
-        step_id: stepId,
+        step_id:
+          stepId,
       }
     );
 
@@ -284,7 +380,8 @@ export async function markStepFailed(
     await graphqlRequest(
       mutation,
       {
-        step_id: stepRunId,
+        step_id:
+          stepRunId,
 
         error:
           errorMessage ||
@@ -373,7 +470,8 @@ export async function failExecution(
     await graphqlRequest(
       mutation,
       {
-        step_id: stepRunId,
+        step_id:
+          stepRunId,
 
         workflow_run_id:
           workflowRunId,
@@ -493,6 +591,7 @@ export async function completeAndCreateNext(
     workflowRunId,
     nextStepId,
     output,
+    input,
   }
 ) {
   if (!stepRunId) {
@@ -569,6 +668,12 @@ export async function completeAndCreateNext(
     }
   `;
 
+  const nextInput =
+    input ?? {
+      previous_output:
+        output ?? null,
+    };
+
   const data =
     await graphqlRequest(
       mutation,
@@ -585,10 +690,8 @@ export async function completeAndCreateNext(
         output:
           output ?? null,
 
-        input: {
-          previous_output:
-            output ?? null,
-        },
+        input:
+          nextInput,
       }
     );
 
@@ -1036,10 +1139,13 @@ export async function approvePausedStep(
   };
 
 
+  // ==========================================================
+  // PRESERVE PREVIOUS OUTPUT
+  // ==========================================================
+
   const previousOutput =
     stepRun.input?.previous_output ??
     null;
-
 
   const nextStepInput = {
     previous_output:

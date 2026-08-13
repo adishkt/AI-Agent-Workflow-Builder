@@ -6,6 +6,7 @@ import {
   getCurrentStep,
   getWorkflowRun,
   getNextStep,
+  getNextStepAfterOrder,
   getStepById,
   markStepFailed,
   failExecution,
@@ -69,16 +70,12 @@ export default async (
     const stepRun =
       req.body?.event?.data?.new;
 
-
     if (!stepRun) {
-
       return res.status(400).json({
         success: false,
-
         message:
           "step_run event data is missing",
       });
-
     }
 
 
@@ -91,10 +88,8 @@ export default async (
     const workflowStepId =
       stepRun.workflow_step_id;
 
-
     const stepInput =
       stepRun.input || {};
-
 
     const currentAttempt =
       Number(
@@ -111,14 +106,11 @@ export default async (
       !workflowRunId ||
       !workflowStepId
     ) {
-
       return res.status(400).json({
         success: false,
-
         message:
           "Invalid step_run event data",
       });
-
     }
 
 
@@ -165,22 +157,17 @@ export default async (
     if (
       !process.env.NHOST_GRAPHQL_URL
     ) {
-
       throw new Error(
         "NHOST_GRAPHQL_URL is not configured"
       );
-
     }
-
 
     if (
       !process.env.NHOST_ADMIN_SECRET
     ) {
-
       throw new Error(
         "NHOST_ADMIN_SECRET is not configured"
       );
-
     }
 
 
@@ -204,13 +191,10 @@ export default async (
         workflowStepId
       );
 
-
     if (!step) {
-
       throw new Error(
         "Workflow step could not be loaded"
       );
-
     }
 
 
@@ -230,9 +214,6 @@ export default async (
     // ========================================================
 
     /*
-     *
-     * IMPORTANT:
-     *
      * workflowRunId is NOT workflowId.
      *
      * Correct relationship:
@@ -240,30 +221,24 @@ export default async (
      * workflowRun.workflow_id
      *          ==
      * step.workflow_id
-     *
      */
 
     if (
       workflowRun.workflow_id !==
       step.workflow_id
     ) {
-
       throw new Error(
         "Workflow step does not belong to this workflow run"
       );
-
     }
-
 
     if (
       workflowRun.id !==
       workflowRunId
     ) {
-
       throw new Error(
         "Invalid workflow run"
       );
-
     }
 
 
@@ -298,13 +273,10 @@ export default async (
     // ========================================================
 
     /*
+     * Approval gate pauses the workflow.
      *
-     * Approval gate does not execute immediately.
-     *
-     * It pauses the workflow.
-     *
-     * approveStep later creates the next step_run.
-     *
+     * approvePausedStep() later creates the next
+     * pending step_run.
      */
 
     if (
@@ -316,18 +288,14 @@ export default async (
         step.config?.message ||
         "Approval required to continue this workflow.";
 
-
       await pauseApprovalGate(
         graphqlRequest,
         {
           stepRunId,
-
           workflowRunId,
-
           message,
         }
       );
-
 
       console.log(
         "========================================"
@@ -351,9 +319,7 @@ export default async (
         "========================================"
       );
 
-
       return res.status(200).json({
-
         success: true,
 
         message:
@@ -374,7 +340,6 @@ export default async (
         approval_required:
           true,
       });
-
     }
 
 
@@ -399,25 +364,19 @@ export default async (
         if (
           !process.env.OPENROUTER_API_KEY
         ) {
-
           throw new Error(
             "OPENROUTER_API_KEY is not configured"
           );
-
         }
-
 
         stepOutput =
           await executeLLMStep(
             step,
-
             stepInput,
-
             {
               getRemainingTime,
             }
           );
-
       }
 
 
@@ -433,14 +392,11 @@ export default async (
         stepOutput =
           await executeHttpStep(
             step,
-
             stepInput,
-
             {
               getRemainingTime,
             }
           );
-
       }
 
 
@@ -456,12 +412,9 @@ export default async (
         stepOutput =
           await executeDbWriteStep(
             graphqlRequest,
-
             stepRunId,
-
             stepInput
           );
-
       }
 
 
@@ -477,10 +430,8 @@ export default async (
         stepOutput =
           await executeConditionalStep(
             step,
-
             stepInput
           );
-
 
         console.log(
           "========================================"
@@ -528,7 +479,6 @@ export default async (
         console.log(
           "========================================"
         );
-
       }
 
 
@@ -541,7 +491,6 @@ export default async (
         throw new Error(
           `Unsupported step type: ${step.type}`
         );
-
       }
 
 
@@ -601,7 +550,6 @@ export default async (
             currentAttempt
           );
 
-
         console.log(
           `Retry available: ${nextAttempt + 1}/${maxAttempts}`
         );
@@ -611,11 +559,8 @@ export default async (
 
           await markStepFailed(
             graphqlRequest,
-
             stepRunId,
-
             errorMessage,
-
             currentAttempt
           );
 
@@ -712,7 +657,6 @@ export default async (
               "Could not mark workflow failed:",
               dbError
             );
-
           }
 
 
@@ -736,9 +680,7 @@ export default async (
             status:
               "failed",
           });
-
         }
-
       }
 
 
@@ -773,7 +715,6 @@ export default async (
           "Could not update final failure:",
           dbError
         );
-
       }
 
 
@@ -802,7 +743,6 @@ export default async (
         status:
           "failed",
       });
-
     }
 
 
@@ -818,7 +758,6 @@ export default async (
       throw new Error(
         `Step "${step.name}" returned no output`
       );
-
     }
 
 
@@ -834,6 +773,15 @@ export default async (
     // 8. CONDITIONAL BRANCH
     // ========================================================
 
+    /*
+     * IMPORTANT:
+     *
+     * A conditional branch must ONLY create the
+     * selected TRUE/FALSE branch.
+     *
+     * It must NOT use getNextStep() here.
+     */
+
     if (
       step.type ===
       "conditional_branch"
@@ -848,14 +796,18 @@ export default async (
         throw new Error(
           `Conditional branch "${step.name}" does not define the selected next step`
         );
-
       }
+
+
+      console.log(
+        "Conditional selected step:",
+        selectedStepId
+      );
 
 
       const nextStep =
         await getStepById(
           graphqlRequest,
-
           selectedStepId
         );
 
@@ -865,7 +817,6 @@ export default async (
         throw new Error(
           `Selected conditional step ${selectedStepId} could not be found`
         );
-
       }
 
 
@@ -881,9 +832,17 @@ export default async (
         throw new Error(
           "Conditional branch cannot jump to a step in another workflow"
         );
-
       }
 
+
+      console.log(
+        `Conditional branch selected: ${nextStep.name}`
+      );
+
+
+      // ------------------------------------------------------
+      // CREATE ONLY SELECTED BRANCH
+      // ------------------------------------------------------
 
       await completeAndCreateNext(
         graphqlRequest,
@@ -897,6 +856,26 @@ export default async (
 
           output:
             stepOutput,
+
+          input: {
+            previous_output:
+              stepOutput,
+
+            conditional_branch: {
+
+              conditional_step_id:
+                step.id,
+
+              true_step_id:
+                stepOutput.true_step_id,
+
+              false_step_id:
+                stepOutput.false_step_id,
+
+              selected_step_id:
+                selectedStepId,
+            },
+          },
         }
       );
 
@@ -932,7 +911,6 @@ export default async (
         status:
           "running",
       });
-
     }
 
 
@@ -940,7 +918,7 @@ export default async (
     // 9. NORMAL STEP → NEXT STEP
     // ========================================================
 
-    const nextStep =
+    let nextStep =
       await getNextStep(
         graphqlRequest,
 
@@ -949,6 +927,100 @@ export default async (
         step.step_order
       );
 
+
+    /*
+     * --------------------------------------------------------
+     * CONDITIONAL BRANCH PATH
+     * --------------------------------------------------------
+     *
+     * Example:
+     *
+     * Step 1  -> LLM
+     * Step 2  -> Conditional
+     * Step 3  -> TRUE
+     * Step 4  -> FALSE
+     * Step 5  -> Common
+     *
+     * If TRUE is selected:
+     *
+     * Step 2 -> Step 3
+     *
+     * When Step 3 completes, normal ordering would
+     * incorrectly select Step 4.
+     *
+     * Therefore we detect the branch context and
+     * jump after BOTH TRUE and FALSE branches.
+     */
+
+    const conditionalBranch =
+      stepInput?.conditional_branch;
+
+
+    if (
+      conditionalBranch &&
+      nextStep &&
+      (
+        nextStep.id ===
+          conditionalBranch.true_step_id ||
+
+        nextStep.id ===
+          conditionalBranch.false_step_id
+      )
+    ) {
+
+      const trueStep =
+        await getStepById(
+          graphqlRequest,
+          conditionalBranch.true_step_id
+        );
+
+
+      const falseStep =
+        await getStepById(
+          graphqlRequest,
+          conditionalBranch.false_step_id
+        );
+
+
+      if (
+        !trueStep ||
+        !falseStep
+      ) {
+
+        throw new Error(
+          "Conditional branch endpoints could not be resolved"
+        );
+      }
+
+
+      const branchEndOrder =
+        Math.max(
+          trueStep.step_order,
+          falseStep.step_order
+        );
+
+
+      console.log(
+        "Conditional branch completed.",
+        "Skipping sibling branch and continuing after order:",
+        branchEndOrder
+      );
+
+
+      nextStep =
+        await getNextStepAfterOrder(
+          graphqlRequest,
+
+          step.workflow_id,
+
+          branchEndOrder
+        );
+    }
+
+
+    // ========================================================
+    // CREATE NEXT STEP
+    // ========================================================
 
     if (nextStep) {
 
@@ -964,7 +1036,6 @@ export default async (
         throw new Error(
           "Next step belongs to a different workflow"
         );
-
       }
 
 
@@ -980,6 +1051,19 @@ export default async (
 
           output:
             stepOutput,
+
+          input: {
+
+            previous_output:
+              stepOutput,
+
+            ...(conditionalBranch
+              ? {
+                  conditional_branch:
+                    conditionalBranch,
+                }
+              : {}),
+          },
         }
       );
 
@@ -1021,7 +1105,6 @@ export default async (
         status:
           "running",
       });
-
     }
 
 
@@ -1039,7 +1122,6 @@ export default async (
       throw new Error(
         "Organization ID could not be resolved for final workflow step"
       );
-
     }
 
 
@@ -1143,7 +1225,5 @@ export default async (
         error?.message ||
         "Unknown error",
     });
-
   }
-
 };
